@@ -1,0 +1,15 @@
+lanqp Design Notes
+==================
+
+Configuration:
+  lanqp is configured with:
+    Connection Details:
+      host/IP
+      port #
+      SSL information
+      SASL information
+    Identity
+      x.509 cert
+      username/password
+
+
