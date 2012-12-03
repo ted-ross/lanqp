@@ -1,0 +1,18 @@
+Tasks needing to be done.
+
+AMQP Interface:
+  - Add Qpid Proton to the lookup/dependencies of CMake
+  - Proton: Add API hooks to the driver for foreign FD control (for the tap fd)
+  - Write the code that reacts to a new connection by establishing:
+     o An outgoing link for all datagrams
+     o An incoming link for multicast datagrams
+     o An incoming link for the local MAC address
+  - Eventually refactor the above to include an incoming link for
+    "configure-me" functionality
+
+Main Program:
+  - Build lanqp main-loop around the Proton driver (consider using the
+    nexus server as a base)
+     o nexus provides resilient connections, timers, signal handlers, etc.
+  - Add a config-file reader for static configuration
+  - Add event generation (syslog, etc.) for normal operation and errors
