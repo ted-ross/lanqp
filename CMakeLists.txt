@@ -24,6 +24,9 @@ project(lanqp C)
 find_library(proton_lib qpid-proton)
 find_path(proton_include proton/driver.h)
 
+find_library(nexus_lib nexus-server)
+find_path(nexus_include nexus/server.h)
+
 include(CheckIncludeFiles)
 check_include_files("linux/if_tun.h" HAVE_LINUX_IF_TUN_H)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
@@ -32,16 +35,18 @@ include_directories(
     ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${proton_include}
+    ${nexus_include}
     )
 
 ##
 ## Build the application
 ##
 set(lanqp_SOURCES
-    src/driver.c
+    src/bridge.c
+    src/main.c
     src/tun_dev.c
     )
 
 add_executable(lanqp ${lanqp_SOURCES})
-target_link_libraries(lanqp ${proton_lib})
+target_link_libraries(lanqp ${nexus_lib})
 
