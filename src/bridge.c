@@ -11,9 +11,11 @@
 #include <malloc.h>
 #include <time.h>
 #include <errno.h>
+#include <nexus/ctools.h>
 #include <nexus/log.h>
 #include <nexus/server.h>
 #include <nexus/container.h>
+#include <nexus/message.h>
 
 #define MTU 1500
 
@@ -33,12 +35,14 @@ typedef struct ip_header_t {
     uint32_t dst_addr;
 } ip_header_t;
 
-static const char   *MODULE = "BRIDGE";
-static nx_user_fd_t *user_fd;
-static int           fd;
-static pn_session_t *sess;
-static pn_link_t    *sender;
-static pn_link_t    *receiver;
+static const char        *MODULE = "BRIDGE";
+static nx_user_fd_t      *user_fd;
+static int                fd;
+static pn_session_t      *sess;
+static pn_link_t         *sender;
+static pn_link_t         *receiver;
+static nx_message_list_t  out_messages;
+static nx_message_list_t  in_messages;
 
 static void get_dest_addr(const char *buffer, char *addr, int len, const char *prefix)
 {
@@ -62,7 +66,12 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     char buffer[MTU];
     char addr_str[200];
 
+    // TODO - Discriminate between writable and readable activation
+    //        If writable, send IP packets in the bodies of messagse in the in_messages list
+    //        If readable, do below
+
     while (1) {
+        // TODO - Scatter the read into message buffers
         ssize_t len = read(fd, buffer, MTU);
         if (len == -1) {
             if (errno == EAGAIN || errno == EINTR) {
@@ -79,6 +88,10 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
 	  continue;
 
 	get_dest_addr(buffer, addr_str, 200, "vlan");
+
+        // TODO - Build the message headers
+        // TODO - Place the headers and buffers into a message and enqueue on the out_messages list
+        // TODO - Activate the sender link for transmit
 
         nx_log(MODULE, LOG_TRACE, "From tunnel: dest=%s len=%ld", addr_str, len);
     }
@@ -184,6 +197,9 @@ int bridge_setup()
     }
 
     nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
+
+    DEQ_INIT(out_messages);
+    DEQ_INIT(in_messages);
 
     //
     // Register the FD as a user-fd to be managed by nexus-server.
