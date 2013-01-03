@@ -48,5 +48,5 @@ set(lanqp_SOURCES
     )
 
 add_executable(lanqp ${lanqp_SOURCES})
-target_link_libraries(lanqp ${nexus_lib})
+target_link_libraries(lanqp ${proton_lib} ${nexus_lib})
 
