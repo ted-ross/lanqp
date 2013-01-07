@@ -16,6 +16,7 @@
 #include <nexus/server.h>
 #include <nexus/container.h>
 #include <nexus/message.h>
+#include <nexus/threading.h>
 
 #define MTU 1500
 
@@ -44,6 +45,7 @@ static nx_link_t         *receiver;
 static nx_message_list_t  out_messages;
 static nx_message_list_t  in_messages;
 static uint64_t           tag = 1;
+static sys_mutex_t       *lock;
 
 static void get_dest_addr(unsigned char *buffer, char *addr, int len, const char *prefix)
 {
@@ -74,6 +76,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     if (nx_user_fd_is_writeable(ufd)) {
         // TODO - Send inbound datagrams to the tunnel
         printf("    writable\n");
+        sys_mutex_lock(lock);
         msg = DEQ_HEAD(out_messages);
         while (msg) {
             len = write(fd,
@@ -81,7 +84,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
                         msg->body_data.length);
             if (len == -1) {
                 if (errno == EAGAIN || errno == EINTR) {
-                    nx_user_fd_activate_read(user_fd);
+                    nx_user_fd_activate_write(user_fd);
                     break;
                 }
             }
@@ -89,7 +92,9 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             DEQ_REMOVE_HEAD(out_messages);
             nx_free_message(msg);
             nx_log(MODULE, LOG_TRACE, "Inbound Datagram: len=%ld", len);
+            msg = DEQ_HEAD(out_messages);
         }
+        sys_mutex_unlock(lock);
     }
 
     if (nx_user_fd_is_readable(ufd)) {
@@ -120,9 +125,9 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
 
             msg = nx_allocate_message();
             nx_message_compose_1(msg, addr_str, buf);
-            //LOCK
+            sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(out_messages, msg);
-            //UNLOCK
+            sys_mutex_unlock(lock);
 
             nx_link_activate(sender);
 
@@ -168,16 +173,16 @@ static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t
 
     printf("tx_handler\n");
 
-    // LOCK
+    sys_mutex_lock(lock);
     msg = DEQ_HEAD(out_messages);
     if (!msg) {
-        //UNLOCK
+        sys_mutex_unlock(lock);
         return;
     }
 
     DEQ_REMOVE_HEAD(out_messages);
     size = DEQ_SIZE(out_messages);
-    //UNLOCK
+    sys_mutex_unlock(lock);
 
     buf = DEQ_HEAD(msg->buffers);
     while (buf) {
@@ -216,12 +221,12 @@ static int bridge_writable_handler(void *node_context, nx_link_t *link)
     uint64_t   dtag;
     pn_link_t *pn_link = nx_link_pn(link);
 
-    // LOCK
+    sys_mutex_lock(lock);
     if (DEQ_SIZE(out_messages) > 0) {
         grant_delivery = 1;
         dtag = tag++;
     }
-    // UNLOCK
+    sys_mutex_unlock(lock);
 
     if (grant_delivery) {
         pn_delivery(pn_link, pn_dtag((char*) &dtag, 8));
@@ -260,6 +265,7 @@ static void bridge_outbound_conn_open_handler(void *type_context, nx_connection_
 
     pn_link_open(nx_link_pn(sender));
     pn_link_open(nx_link_pn(receiver));
+    pn_link_flow(nx_link_pn(receiver), 10);
 }
 
 
@@ -294,6 +300,8 @@ int bridge_setup()
         close(fd);
         return -1;
     }
+
+    lock = sys_mutex();
 
     nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
 
