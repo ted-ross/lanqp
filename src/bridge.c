@@ -38,13 +38,14 @@ typedef struct ip_header_t {
 static const char        *MODULE = "BRIDGE";
 static nx_user_fd_t      *user_fd;
 static int                fd;
-static pn_session_t      *sess;
-static pn_link_t         *sender;
-static pn_link_t         *receiver;
+static nx_node_t         *node;
+static nx_link_t         *sender;
+static nx_link_t         *receiver;
 static nx_message_list_t  out_messages;
 static nx_message_list_t  in_messages;
+static uint64_t           tag = 1;
 
-static void get_dest_addr(const char *buffer, char *addr, int len, const char *prefix)
+static void get_dest_addr(unsigned char *buffer, char *addr, int len, const char *prefix)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
 
@@ -63,48 +64,134 @@ static void get_dest_addr(const char *buffer, char *addr, int len, const char *p
 
 static void user_fd_handler(void *context, nx_user_fd_t *ufd)
 {
-    char buffer[MTU];
-    char addr_str[200];
+    char          addr_str[200];
+    nx_message_t *msg;
+    nx_buffer_t  *buf;
 
-    // TODO - Discriminate between writable and readable activation
-    //        If writable, send IP packets in the bodies of messagse in the in_messages list
-    //        If readable, do below
+    printf("user_fd_handler\n");
 
-    while (1) {
-        // TODO - Scatter the read into message buffers
-        ssize_t len = read(fd, buffer, MTU);
-        if (len == -1) {
-            if (errno == EAGAIN || errno == EINTR) {
-                nx_user_fd_activate_read(user_fd);
+    if (nx_user_fd_is_writeable(ufd)) {
+        // TODO - Send inbound datagrams to the tunnel
+        printf("    writable\n");
+    }
+
+    if (nx_user_fd_is_readable(ufd)) {
+        printf("    readable\n");
+        while (1) {
+            // TODO - Scatter the read into message buffers
+            buf = nx_allocate_buffer();
+            ssize_t len = read(fd, nx_buffer_base(buf), MTU);
+            if (len == -1) {
+                nx_free_buffer(buf);
+                if (errno == EAGAIN || errno == EINTR) {
+                    nx_user_fd_activate_read(user_fd);
+                    return;
+                }
+
+                nx_log(MODULE, LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
+                nx_server_stop();
                 return;
             }
 
-            nx_log(MODULE, LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
-            nx_server_stop();
-            return;
+            if (len < 20) {
+                nx_free_buffer(buf);
+                continue;
+            }
+
+            nx_buffer_insert(buf, len);
+            get_dest_addr(nx_buffer_base(buf), addr_str, 200, "vlan");
+
+            msg = nx_allocate_message();
+            nx_message_compose_1(msg, addr_str, buf);
+            //LOCK
+            DEQ_INSERT_TAIL(out_messages, msg);
+            //UNLOCK
+
+            nx_link_activate(sender);
+
+            nx_log(MODULE, LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
         }
-
-	if (len < 20)
-	  continue;
-
-	get_dest_addr(buffer, addr_str, 200, "vlan");
-
-        // TODO - Build the message headers
-        // TODO - Place the headers and buffers into a message and enqueue on the out_messages list
-        // TODO - Activate the sender link for transmit
-
-        nx_log(MODULE, LOG_TRACE, "From tunnel: dest=%s len=%ld", addr_str, len);
     }
+
+    nx_user_fd_activate_read(user_fd); // FIX THIS!!
 }
 
 
 static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t *delivery)
 {
+    pn_link_t    *pn_link = pn_delivery_link(delivery);
+    nx_message_t *msg;
+    int           valid_message = 0;
+
+    msg = nx_message_receive(delivery);
+    if (!msg)
+        return;
+
+    valid_message = nx_message_check(msg, NX_DEPTH_BODY);
+
+    pn_link_advance(pn_link);
+    pn_link_flow(pn_link, 1);
+
+    if (valid_message) {
+        nx_field_iterator_t *iter = nx_message_field_to(msg);
+        nx_router_link_t    *rlink;
+        if (iter) {
+            nx_field_iterator_reset(iter, ITER_VIEW_NO_HOST);
+            sys_mutex_lock(router->lock);
+            int result = hash_retrieve(router->out_hash, iter, (void*) &rlink);
+            nx_field_iterator_free(iter);
+
+            if (result == 0) {
+                pn_link_t* pn_outlink = nx_link_pn(rlink->link);
+                DEQ_INSERT_TAIL(rlink->out_fifo, msg);
+                pn_link_offered(pn_outlink, DEQ_SIZE(rlink->out_fifo));
+                nx_link_activate(rlink->link);
+            } else {
+                pn_delivery_update(delivery, PN_RELEASED);
+                pn_delivery_settle(delivery);
+            }
+
+            sys_mutex_unlock(router->lock);
+        }
+    } else {
+        pn_delivery_update(delivery, PN_REJECTED);
+        pn_delivery_settle(delivery);
+    }
+
 }
 
 
 static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t *delivery)
 {
+    pn_link_t    *pn_link = pn_delivery_link(delivery);
+    nx_message_t *msg;
+    nx_buffer_t  *buf;
+    size_t        size;
+
+    printf("tx_handler\n");
+
+    // LOCK
+    msg = DEQ_HEAD(out_messages);
+    if (!msg) {
+        //UNLOCK
+        return;
+    }
+
+    DEQ_REMOVE_HEAD(out_messages);
+    size = DEQ_SIZE(out_messages);
+    //UNLOCK
+
+    buf = DEQ_HEAD(msg->buffers);
+    while (buf) {
+        DEQ_REMOVE_HEAD(msg->buffers);
+        pn_link_send(pn_link, (char*) nx_buffer_base(buf), nx_buffer_size(buf));
+        nx_free_buffer(buf);
+        buf = DEQ_HEAD(msg->buffers);
+    }
+    nx_free_message(msg);
+    pn_delivery_settle(delivery);
+    pn_link_advance(pn_link);
+    pn_link_offered(pn_link, size);
 }
 
 
@@ -127,6 +214,26 @@ static int bridge_outgoing_handler(void *node_context, nx_link_t *link)
 
 static int bridge_writable_handler(void *node_context, nx_link_t *link)
 {
+    int        grant_delivery = 0;
+    uint64_t   dtag;
+    pn_link_t *pn_link = nx_link_pn(link);
+
+    // LOCK
+    if (DEQ_SIZE(out_messages) > 0) {
+        grant_delivery = 1;
+        dtag = tag++;
+    }
+    // UNLOCK
+
+    if (grant_delivery) {
+        pn_delivery(pn_link, pn_dtag((char*) &dtag, 8));
+        pn_delivery_t *delivery = pn_link_current(pn_link);
+        if (delivery) {
+            bridge_tx_handler(node_context, link, delivery);
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -144,23 +251,17 @@ static void bridge_outbound_conn_open_handler(void *type_context, nx_connection_
     // TODO - Get the IP address for the interface (see 'man netdevice')
     const char *my_addr = "vlan.10.1.1.1";
 
-    sess = pn_session(nx_connection_get_engine(conn));
+    sender   = nx_link(node, conn, NX_OUTGOING, "vlan-sender");
+    receiver = nx_link(node, conn, NX_INCOMING, "vlan-receiver");
 
-    sender   = pn_sender(sess, "vlan-sender");
-    receiver = pn_receiver(sess, "vlan-receiver");
+    pn_terminus_set_address(nx_link_remote_target(sender), "all");
+    pn_terminus_set_address(nx_link_remote_source(receiver), my_addr);
 
-    pn_terminus_set_address(pn_link_remote_target(sender), "all");
-    pn_terminus_set_address(pn_link_remote_source(receiver), my_addr);
+    pn_terminus_set_address(nx_link_source(sender), "all");
+    pn_terminus_set_address(nx_link_target(receiver), my_addr);
 
-    pn_terminus_set_address(pn_link_source(sender), "all");
-    pn_terminus_set_address(pn_link_target(receiver), my_addr);
-
-    pn_connection_open(nx_connection_get_engine(conn));
-    pn_session_open(sess);
-    pn_link_open(sender);
-    pn_link_open(receiver);
-
-    nx_server_activate(conn);
+    pn_link_open(nx_link_pn(sender));
+    pn_link_open(nx_link_pn(receiver));
 }
 
 
@@ -198,6 +299,8 @@ int bridge_setup()
 
     nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
 
+    nx_allocator_initialize(nx_allocator_default_config());
+
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);
 
@@ -212,12 +315,13 @@ int bridge_setup()
         return -1;
     }
     nx_user_fd_activate_read(user_fd);
+    nx_user_fd_activate_write(user_fd);
 
     //
     // Register self as a container type and instance.
     //
     nx_container_register_node_type(&node_descriptor);
-    nx_container_set_default_node_type(&node_descriptor, 0, NX_DIST_MOVE);
+    node = nx_container_create_node(&node_descriptor, "qnet", 0, NX_DIST_MOVE, NX_LIFE_PERMANENT);
 
     //
     // Establish an outgoing connection to the server.
