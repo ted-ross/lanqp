@@ -67,12 +67,29 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     char          addr_str[200];
     nx_message_t *msg;
     nx_buffer_t  *buf;
+    ssize_t       len;
 
     printf("user_fd_handler\n");
 
     if (nx_user_fd_is_writeable(ufd)) {
         // TODO - Send inbound datagrams to the tunnel
         printf("    writable\n");
+        msg = DEQ_HEAD(out_messages);
+        while (msg) {
+            len = write(fd,
+                        nx_buffer_base(msg->body_data.buffer) + msg->body_data.offset,
+                        msg->body_data.length);
+            if (len == -1) {
+                if (errno == EAGAIN || errno == EINTR) {
+                    nx_user_fd_activate_read(user_fd);
+                    break;
+                }
+            }
+
+            DEQ_REMOVE_HEAD(out_messages);
+            nx_free_message(msg);
+            nx_log(MODULE, LOG_TRACE, "Inbound Datagram: len=%ld", len);
+        }
     }
 
     if (nx_user_fd_is_readable(ufd)) {
@@ -80,7 +97,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
         while (1) {
             // TODO - Scatter the read into message buffers
             buf = nx_allocate_buffer();
-            ssize_t len = read(fd, nx_buffer_base(buf), MTU);
+            len = read(fd, nx_buffer_base(buf), MTU);
             if (len == -1) {
                 nx_free_buffer(buf);
                 if (errno == EAGAIN || errno == EINTR) {
@@ -133,31 +150,12 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     pn_link_flow(pn_link, 1);
 
     if (valid_message) {
-        nx_field_iterator_t *iter = nx_message_field_to(msg);
-        nx_router_link_t    *rlink;
-        if (iter) {
-            nx_field_iterator_reset(iter, ITER_VIEW_NO_HOST);
-            sys_mutex_lock(router->lock);
-            int result = hash_retrieve(router->out_hash, iter, (void*) &rlink);
-            nx_field_iterator_free(iter);
-
-            if (result == 0) {
-                pn_link_t* pn_outlink = nx_link_pn(rlink->link);
-                DEQ_INSERT_TAIL(rlink->out_fifo, msg);
-                pn_link_offered(pn_outlink, DEQ_SIZE(rlink->out_fifo));
-                nx_link_activate(rlink->link);
-            } else {
-                pn_delivery_update(delivery, PN_RELEASED);
-                pn_delivery_settle(delivery);
-            }
-
-            sys_mutex_unlock(router->lock);
-        }
-    } else {
+        DEQ_INSERT_TAIL(out_messages, msg);
+        nx_user_fd_activate_write(user_fd);
+    } else
         pn_delivery_update(delivery, PN_REJECTED);
-        pn_delivery_settle(delivery);
-    }
 
+    pn_delivery_settle(delivery);
 }
 
 
