@@ -74,14 +74,11 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     printf("user_fd_handler\n");
 
     if (nx_user_fd_is_writeable(ufd)) {
-        // TODO - Send inbound datagrams to the tunnel
         printf("    writable\n");
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
-            len = write(fd,
-                        nx_buffer_base(msg->body_data.buffer) + msg->body_data.offset,
-                        msg->body_data.length);
+            len = write(fd, nx_buffer_base(msg->body.buffer) + msg->body.offset, msg->body.length); // TODO - Gather
             if (len == -1) {
                 if (errno == EAGAIN || errno == EINTR) {
                     nx_user_fd_activate_write(user_fd);
@@ -155,10 +152,14 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     pn_link_flow(pn_link, 1);
 
     if (valid_message) {
-        sys_mutex_lock(lock);
-        DEQ_INSERT_TAIL(in_messages, msg);
-        sys_mutex_unlock(lock);
-        nx_user_fd_activate_write(user_fd);
+        nx_field_iterator_t *iter = nx_message_body(msg);
+        if (iter) {
+            sys_mutex_lock(lock);
+            DEQ_INSERT_TAIL(in_messages, msg);
+            sys_mutex_unlock(lock);
+            nx_user_fd_activate_write(user_fd);
+            nx_field_iterator_free(iter);
+        }
     } else
         pn_delivery_update(delivery, PN_REJECTED);
 
