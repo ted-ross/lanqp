@@ -77,7 +77,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
         // TODO - Send inbound datagrams to the tunnel
         printf("    writable\n");
         sys_mutex_lock(lock);
-        msg = DEQ_HEAD(out_messages);
+        msg = DEQ_HEAD(in_messages);
         while (msg) {
             len = write(fd,
                         nx_buffer_base(msg->body_data.buffer) + msg->body_data.offset,
@@ -89,10 +89,10 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
                 }
             }
 
-            DEQ_REMOVE_HEAD(out_messages);
+            DEQ_REMOVE_HEAD(in_messages);
             nx_free_message(msg);
             nx_log(MODULE, LOG_TRACE, "Inbound Datagram: len=%ld", len);
-            msg = DEQ_HEAD(out_messages);
+            msg = DEQ_HEAD(in_messages);
         }
         sys_mutex_unlock(lock);
     }
@@ -155,7 +155,9 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     pn_link_flow(pn_link, 1);
 
     if (valid_message) {
-        DEQ_INSERT_TAIL(out_messages, msg);
+        sys_mutex_lock(lock);
+        DEQ_INSERT_TAIL(in_messages, msg);
+        sys_mutex_unlock(lock);
         nx_user_fd_activate_write(user_fd);
     } else
         pn_delivery_update(delivery, PN_REJECTED);
