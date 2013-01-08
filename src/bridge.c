@@ -71,10 +71,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     nx_buffer_t  *buf;
     ssize_t       len;
 
-    printf("user_fd_handler\n");
-
     if (nx_user_fd_is_writeable(ufd)) {
-        printf("    writable\n");
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
@@ -95,7 +92,6 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
     }
 
     if (nx_user_fd_is_readable(ufd)) {
-        printf("    readable\n");
         while (1) {
             // TODO - Scatter the read into message buffers
             buf = nx_allocate_buffer();
@@ -173,8 +169,6 @@ static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     nx_message_t *msg;
     nx_buffer_t  *buf;
     size_t        size;
-
-    printf("tx_handler\n");
 
     sys_mutex_lock(lock);
     msg = DEQ_HEAD(out_messages);
@@ -308,7 +302,12 @@ int bridge_setup()
 
     nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
 
-    nx_allocator_initialize(nx_allocator_default_config());
+    static nx_allocator_config_t my_config;
+
+    memcpy(&my_config, nx_allocator_default_config(), sizeof(nx_allocator_config_t));
+    my_config.buffer_size = 1800;
+
+    nx_allocator_initialize(&my_config);
 
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);

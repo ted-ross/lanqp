@@ -71,7 +71,7 @@ static void startup(void *context)
 
 int main(int argc, char **argv)
 {
-    nx_log_set_mask(LOG_INFO | LOG_TRACE | LOG_ERROR);
+    nx_log_set_mask(LOG_INFO | LOG_ERROR);
 
     nx_server_initialize(2);
     nx_container_initialize();
