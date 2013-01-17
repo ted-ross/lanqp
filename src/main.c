@@ -19,10 +19,10 @@
 
 #include <stdio.h>
 #include <proton/driver.h>
-#include <nexus/server.h>
-#include <nexus/container.h>
-#include <nexus/timer.h>
-#include <nexus/log.h>
+#include <qpid/nexus/server.h>
+#include <qpid/nexus/container.h>
+#include <qpid/nexus/timer.h>
+#include <qpid/nexus/log.h>
 #include <signal.h>
 #include "bridge.h"
 

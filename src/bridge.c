@@ -11,12 +11,13 @@
 #include <malloc.h>
 #include <time.h>
 #include <errno.h>
-#include <nexus/ctools.h>
-#include <nexus/log.h>
-#include <nexus/server.h>
-#include <nexus/container.h>
-#include <nexus/message.h>
-#include <nexus/threading.h>
+#include <qpid/nexus/ctools.h>
+#include <qpid/nexus/log.h>
+#include <qpid/nexus/server.h>
+#include <qpid/nexus/user_fd.h>
+#include <qpid/nexus/container.h>
+#include <qpid/nexus/message.h>
+#include <qpid/nexus/threading.h>
 
 #define MTU 1500
 

@@ -24,8 +24,8 @@ project(lanqp C)
 find_library(proton_lib qpid-proton)
 find_path(proton_include proton/driver.h)
 
-find_library(nexus_lib nexus-server)
-find_path(nexus_include nexus/server.h)
+find_library(nexus_lib qpid-nexus)
+find_path(nexus_include qpid/nexus/server.h)
 
 include(CheckIncludeFiles)
 check_include_files("linux/if_tun.h" HAVE_LINUX_IF_TUN_H)
