@@ -27,6 +27,11 @@
 #include "bridge.h"
 
 static int exit_with_sigint = 0;
+static char *_host;
+static char *_port;
+static char *_iface;
+static char *_vlan;
+static char *_ip;
 
 static void thread_start_handler(void* context, int thread_id)
 {
@@ -61,7 +66,7 @@ static void signal_handler(void* context, int signum)
 static void startup(void *context)
 {
     nx_server_pause();
-    int setup_result = bridge_setup();
+    int setup_result = bridge_setup(_host, _port, _iface, _vlan, _ip);
     nx_server_resume();
 
     if (setup_result < 0)
@@ -71,6 +76,17 @@ static void startup(void *context)
 
 int main(int argc, char **argv)
 {
+    if (argc != 6) {
+        fprintf(stderr, "Usage: %s <host> <port> <interface> <vlan> <ip>\n", argv[0]);
+        return 1;
+    }
+
+    _host  = argv[1];
+    _port  = argv[2];
+    _iface = argv[3];
+    _vlan  = argv[4];
+    _ip    = argv[5];
+
     nx_log_set_mask(LOG_INFO | LOG_ERROR);
 
     nx_server_initialize(2);
