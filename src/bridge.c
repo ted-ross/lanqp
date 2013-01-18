@@ -47,6 +47,11 @@ static nx_message_list_t  in_messages;
 static uint64_t           tag = 1;
 static sys_mutex_t       *lock;
 
+static char *host;
+static char *port;
+static char *iface;
+static char *address;
+
 static void get_dest_addr(unsigned char *buffer, char *addr, int len, const char *prefix)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
@@ -249,16 +254,15 @@ static void bridge_outbound_conn_open_handler(void *type_context, nx_connection_
     nx_log(MODULE, LOG_INFO, "AMQP Connection Established");
 
     // TODO - Get the IP address for the interface (see 'man netdevice')
-    const char *my_addr = "vlan.10.1.1.1";
 
     sender   = nx_link(node, conn, NX_OUTGOING, "vlan-sender");
     receiver = nx_link(node, conn, NX_INCOMING, "vlan-receiver");
 
     pn_terminus_set_address(nx_link_remote_target(sender), "all");
-    pn_terminus_set_address(nx_link_remote_source(receiver), my_addr);
+    pn_terminus_set_address(nx_link_remote_source(receiver), address);
 
     pn_terminus_set_address(nx_link_source(sender), "all");
-    pn_terminus_set_address(nx_link_target(receiver), my_addr);
+    pn_terminus_set_address(nx_link_target(receiver), address);
 
     pn_link_open(nx_link_pn(sender));
     pn_link_open(nx_link_pn(receiver));
@@ -278,10 +282,19 @@ static const nx_node_type_t node_descriptor = {"vlan-controller", 0, 0,
                                                bridge_outbound_conn_open_handler};
 
 
-int bridge_setup()
+int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
 {
+    host  = _host;
+    port  = _port;
+    iface = _iface;
+
+    address = (char*) malloc(strlen(_vlan) + strlen(_ip) + 1);
+    strcpy(address, _vlan);
+    strcat(address, ".");
+    strcat(address, _ip);
+
     char *dev = malloc(10);
-    strcpy(dev, "qnet0");
+    strcpy(dev, iface);
     fd = tun_open(dev);
 
     if (fd == -1) {
@@ -335,8 +348,8 @@ int bridge_setup()
     // Establish an outgoing connection to the server.
     //
     static nx_server_config_t client_config;
-    client_config.host            = "0.0.0.0";
-    client_config.port            = "5672";
+    client_config.host            = host;
+    client_config.port            = port;
     client_config.sasl_mechanisms = "ANONYMOUS";
     client_config.ssl_enabled     = 0;
     nx_server_connect(&client_config, 0);
