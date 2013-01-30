@@ -52,19 +52,21 @@ static char *host;
 static char *port;
 static char *iface;
 static char *address;
+static char *vlan;
 
-static void get_dest_addr(unsigned char *buffer, char *addr, int len, const char *prefix)
+static void get_dest_addr(unsigned char *buffer, char *addr, int len)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
 
     if ((hdr->ver_hlen & 0xf0) == 0x40) {
         uint32_t ip4_addr = ntohl(hdr->dst_addr);
-        snprintf(addr, len, "%s.%d.%d.%d.%d", prefix,
+        snprintf(addr, len, "%s.%d.%d.%d.%d", vlan,
                  (ip4_addr & 0xFF000000) >> 24,
                  (ip4_addr & 0x00FF0000) >> 16,
                  (ip4_addr & 0x0000FF00) >> 8,
                  (ip4_addr & 0x000000FF));
     } else {
+        // TODO - Generate an address for an IPv6 destination
         addr[0] = '\0';
     }
 }
@@ -120,7 +122,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             }
 
             nx_buffer_insert(buf, len);
-            get_dest_addr(nx_buffer_base(buf), addr_str, 200, "vlan");
+            get_dest_addr(nx_buffer_base(buf), addr_str, 200);
 
             msg = nx_allocate_message();
             nx_message_compose_1(msg, addr_str, buf);
@@ -288,6 +290,7 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     host  = _host;
     port  = _port;
     iface = _iface;
+    vlan  = _vlan;
 
     address = (char*) malloc(strlen(_vlan) + strlen(_ip) + 1);
     strcpy(address, _vlan);
