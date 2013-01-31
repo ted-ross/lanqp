@@ -54,6 +54,12 @@ static char *iface;
 static char *address;
 static char *vlan;
 
+/**
+ * get_dest_addr
+ *
+ * Given a buffer received from the tunnel interface, extract the destination
+ * IP address and generate an AMQP address from the vlan name and the IP address.
+ */
 static void get_dest_addr(unsigned char *buffer, char *addr, int len)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
@@ -72,6 +78,12 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
 }
 
 
+/**
+ * user_fd_handler
+ *
+ * This handler is called when the FD for the tunnel interface is either readable,
+ * writable, or both.
+ */
 static void user_fd_handler(void *context, nx_user_fd_t *ufd)
 {
     char          addr_str[200];
@@ -86,6 +98,10 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             len = write(fd, nx_buffer_base(msg->body.buffer) + msg->body.offset, msg->body.length); // TODO - Gather
             if (len == -1) {
                 if (errno == EAGAIN || errno == EINTR) {
+                    //
+                    // FD socked is not accepting writes (it's full).  Activate for write
+                    // so we'll come back here when it's again writable.
+                    //
                     nx_user_fd_activate_write(user_fd);
                     break;
                 }
@@ -124,12 +140,21 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             nx_buffer_insert(buf, len);
             get_dest_addr(nx_buffer_base(buf), addr_str, 200);
 
+            //
+            // Create an AMQP message with the packet's destination address and
+            // the whole packet in the message body.  Enqueue the message on the
+            // out_messages queue for transmission.
+            //
             msg = nx_allocate_message();
             nx_message_compose_1(msg, addr_str, buf);
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(out_messages, msg);
             sys_mutex_unlock(lock);
 
+            //
+            // Activate our amqp sender.  This will cause the bridge_writable_handler to be
+            // invoked when the amqp socket is willing to accept writes.
+            //
             nx_link_activate(sender);
 
             nx_log(MODULE, LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
@@ -146,16 +171,33 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     nx_message_t *msg;
     int           valid_message = 0;
 
+    //
+    // Extract the message from the incoming delivery.
+    //
     msg = nx_message_receive(delivery);
     if (!msg)
+        //
+        // The delivery didn't contain the entire message, we'll come through here
+        // again when there's more data to receive.
+        //
         return;
 
+    //
+    // Parse and validate the message up to the message body.
+    //
     valid_message = nx_message_check(msg, NX_DEPTH_BODY);
 
+    //
+    // Advance the link and issue flow-control credit.
+    //
     pn_link_advance(pn_link);
     pn_link_flow(pn_link, 1);
 
     if (valid_message) {
+        //
+        // The message is valid.  If it contains a non-null body, enqueue it on the in_messages
+        // queue and activate the tunnel FD for write.
+        //
         nx_field_iterator_t *iter = nx_message_body(msg);
         if (iter) {
             sys_mutex_lock(lock);
@@ -164,9 +206,17 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
             nx_user_fd_activate_write(user_fd);
             nx_field_iterator_free(iter);
         }
-    } else
+    } else {
+        //
+        // The message is malformed in some way.  Reject it.
+        //
         pn_delivery_update(delivery, PN_REJECTED);
+        nx_message_free(msg);
+    }
 
+    //
+    // No matter what happened with the message, settle the delivery.
+    //
     pn_delivery_settle(delivery);
 }
 
