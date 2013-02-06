@@ -95,15 +95,18 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
-            len = write(fd, nx_buffer_base(msg->body.buffer) + msg->body.offset, msg->body.length); // TODO - Gather
-            if (len == -1) {
-                if (errno == EAGAIN || errno == EINTR) {
-                    //
-                    // FD socked is not accepting writes (it's full).  Activate for write
-                    // so we'll come back here when it's again writable.
-                    //
-                    nx_user_fd_activate_write(user_fd);
-                    break;
+            nx_field_iterator_t *iter = nx_message_field(msg, NX_FIELD_BODY);
+            if (iter) {
+                len = write(fd, nx_buffer_base(msg->body.buffer) + msg->body.offset, msg->body.length); // TODO - Gather
+                if (len == -1) {
+                    if (errno == EAGAIN || errno == EINTR) {
+                        //
+                        // FD socked is not accepting writes (it's full).  Activate for write
+                        // so we'll come back here when it's again writable.
+                        //
+                        nx_user_fd_activate_write(user_fd);
+                        break;
+                    }
                 }
             }
 
@@ -198,7 +201,7 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
         // The message is valid.  If it contains a non-null body, enqueue it on the in_messages
         // queue and activate the tunnel FD for write.
         //
-        nx_field_iterator_t *iter = nx_message_body(msg);
+        nx_field_iterator_t *iter = nx_message_field(msg, NX_FIELD_BODY);
         if (iter) {
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(in_messages, msg);
@@ -368,13 +371,6 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     lock = sys_mutex();
 
     nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
-
-    static nx_allocator_config_t my_config;
-
-    memcpy(&my_config, nx_allocator_default_config(), sizeof(nx_allocator_config_t));
-    my_config.buffer_size = 1800;
-
-    nx_allocator_initialize(&my_config);
 
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);
