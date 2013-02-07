@@ -17,6 +17,7 @@
 #include <qpid/nexus/user_fd.h>
 #include <qpid/nexus/container.h>
 #include <qpid/nexus/message.h>
+#include <qpid/nexus/iovec.h>
 #include <qpid/nexus/threading.h>
 
 #define MTU 1500
@@ -86,18 +87,22 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
  */
 static void user_fd_handler(void *context, nx_user_fd_t *ufd)
 {
-    char          addr_str[200];
-    nx_message_t *msg;
-    nx_buffer_t  *buf;
-    ssize_t       len;
+    char              addr_str[200];
+    nx_message_t     *msg;
+    nx_buffer_t      *buf;
+    nx_buffer_list_t  buffers;
+    ssize_t           len;
+
+    DEQ_INIT(buffers);
 
     if (nx_user_fd_is_writeable(ufd)) {
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
-            nx_field_iterator_t *iter = nx_message_field(msg, NX_FIELD_BODY);
-            if (iter) {
-                len = write(fd, nx_buffer_base(msg->body.buffer) + msg->body.offset, msg->body.length); // TODO - Gather
+            nx_iovec_t *iov = nx_message_field_iovec(msg, NX_FIELD_BODY);
+            if (iov) {
+                len = writev(fd, nx_iovec_array(iov), nx_iovec_count(iov));
+                nx_iovec_free(iov);
                 if (len == -1) {
                     if (errno == EAGAIN || errno == EINTR) {
                         //
@@ -141,6 +146,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             }
 
             nx_buffer_insert(buf, len);
+            DEQ_INSERT_HEAD(buffers, buf);
             get_dest_addr(nx_buffer_base(buf), addr_str, 200);
 
             //
@@ -149,7 +155,7 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             // out_messages queue for transmission.
             //
             msg = nx_allocate_message();
-            nx_message_compose_1(msg, addr_str, buf);
+            nx_message_compose_1(msg, addr_str, &buffers);
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(out_messages, msg);
             sys_mutex_unlock(lock);
@@ -201,7 +207,7 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
         // The message is valid.  If it contains a non-null body, enqueue it on the in_messages
         // queue and activate the tunnel FD for write.
         //
-        nx_field_iterator_t *iter = nx_message_field(msg, NX_FIELD_BODY);
+        nx_field_iterator_t *iter = nx_message_field_iterator(msg, NX_FIELD_BODY);
         if (iter) {
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(in_messages, msg);
@@ -214,7 +220,7 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
         // The message is malformed in some way.  Reject it.
         //
         pn_delivery_update(delivery, PN_REJECTED);
-        nx_message_free(msg);
+        nx_free_message(msg);
     }
 
     //
@@ -228,7 +234,6 @@ static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t
 {
     pn_link_t    *pn_link = pn_delivery_link(delivery);
     nx_message_t *msg;
-    nx_buffer_t  *buf;
     size_t        size;
 
     sys_mutex_lock(lock);
@@ -242,13 +247,8 @@ static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     size = DEQ_SIZE(out_messages);
     sys_mutex_unlock(lock);
 
-    buf = DEQ_HEAD(msg->buffers);
-    while (buf) {
-        DEQ_REMOVE_HEAD(msg->buffers);
-        pn_link_send(pn_link, (char*) nx_buffer_base(buf), nx_buffer_size(buf));
-        nx_free_buffer(buf);
-        buf = DEQ_HEAD(msg->buffers);
-    }
+    nx_message_send(msg, pn_link);
+
     nx_free_message(msg);
     pn_delivery_settle(delivery);
     pn_link_advance(pn_link);

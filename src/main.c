@@ -23,6 +23,7 @@
 #include <qpid/nexus/container.h>
 #include <qpid/nexus/timer.h>
 #include <qpid/nexus/log.h>
+#include <qpid/nexus/buffer.h>
 #include <signal.h>
 #include "bridge.h"
 
@@ -88,6 +89,7 @@ int main(int argc, char **argv)
     _ip    = argv[5];
 
     nx_log_set_mask(LOG_INFO | LOG_ERROR);
+    nx_buffer_set_size(1800);
 
     nx_server_initialize(2);
     nx_container_initialize();

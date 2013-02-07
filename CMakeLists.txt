@@ -18,7 +18,7 @@
 ##
 
 cmake_minimum_required(VERSION 2.6)
-set(CMAKE_C_FLAGS "-pthread -Wall -Werror -DNEXUS_BUFFER_SIZE=1800")
+set(CMAKE_C_FLAGS "-pthread -Wall -Werror")
 
 project(lanqp C)
 find_library(proton_lib qpid-proton)
