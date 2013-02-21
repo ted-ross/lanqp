@@ -11,14 +11,14 @@
 #include <malloc.h>
 #include <time.h>
 #include <errno.h>
-#include <qpid/nexus/ctools.h>
-#include <qpid/nexus/log.h>
-#include <qpid/nexus/server.h>
-#include <qpid/nexus/user_fd.h>
-#include <qpid/nexus/container.h>
-#include <qpid/nexus/message.h>
-#include <qpid/nexus/iovec.h>
-#include <qpid/nexus/threading.h>
+#include <qpid/dispatch/ctools.h>
+#include <qpid/dispatch/log.h>
+#include <qpid/dispatch/server.h>
+#include <qpid/dispatch/user_fd.h>
+#include <qpid/dispatch/container.h>
+#include <qpid/dispatch/message.h>
+#include <qpid/dispatch/iovec.h>
+#include <qpid/dispatch/threading.h>
 
 #define MTU 1500
 
@@ -39,13 +39,13 @@ typedef struct ip_header_t {
 } ip_header_t;
 
 static const char        *MODULE = "BRIDGE";
-static nx_user_fd_t      *user_fd;
+static dx_user_fd_t      *user_fd;
 static int                fd;
-static nx_node_t         *node;
-static nx_link_t         *sender;
-static nx_link_t         *receiver;
-static nx_message_list_t  out_messages;
-static nx_message_list_t  in_messages;
+static dx_node_t         *node;
+static dx_link_t         *sender;
+static dx_link_t         *receiver;
+static dx_message_list_t  out_messages;
+static dx_message_list_t  in_messages;
 static uint64_t           tag = 1;
 static sys_mutex_t       *lock;
 
@@ -85,77 +85,77 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
  * This handler is called when the FD for the tunnel interface is either readable,
  * writable, or both.
  */
-static void user_fd_handler(void *context, nx_user_fd_t *ufd)
+static void user_fd_handler(void *context, dx_user_fd_t *ufd)
 {
     char              addr_str[200];
-    nx_message_t     *msg;
-    nx_buffer_t      *buf;
-    nx_buffer_list_t  buffers;
+    dx_message_t     *msg;
+    dx_buffer_t      *buf;
+    dx_buffer_list_t  buffers;
     ssize_t           len;
 
     DEQ_INIT(buffers);
 
-    if (nx_user_fd_is_writeable(ufd)) {
+    if (dx_user_fd_is_writeable(ufd)) {
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
-            nx_iovec_t *iov = nx_message_field_iovec(msg, NX_FIELD_BODY);
+            dx_iovec_t *iov = dx_message_field_iovec(msg, DX_FIELD_BODY);
             if (iov) {
-                len = writev(fd, nx_iovec_array(iov), nx_iovec_count(iov));
-                nx_iovec_free(iov);
+                len = writev(fd, dx_iovec_array(iov), dx_iovec_count(iov));
+                dx_iovec_free(iov);
                 if (len == -1) {
                     if (errno == EAGAIN || errno == EINTR) {
                         //
                         // FD socked is not accepting writes (it's full).  Activate for write
                         // so we'll come back here when it's again writable.
                         //
-                        nx_user_fd_activate_write(user_fd);
+                        dx_user_fd_activate_write(user_fd);
                         break;
                     }
                 }
             }
 
             DEQ_REMOVE_HEAD(in_messages);
-            nx_free_message(msg);
-            nx_log(MODULE, LOG_TRACE, "Inbound Datagram: len=%ld", len);
+            dx_free_message(msg);
+            dx_log(MODULE, LOG_TRACE, "Inbound Datagram: len=%ld", len);
             msg = DEQ_HEAD(in_messages);
         }
         sys_mutex_unlock(lock);
     }
 
-    if (nx_user_fd_is_readable(ufd)) {
+    if (dx_user_fd_is_readable(ufd)) {
         while (1) {
             // TODO - Scatter the read into message buffers
-            buf = nx_allocate_buffer();
-            len = read(fd, nx_buffer_base(buf), MTU);
+            buf = dx_allocate_buffer();
+            len = read(fd, dx_buffer_base(buf), MTU);
             if (len == -1) {
-                nx_free_buffer(buf);
+                dx_free_buffer(buf);
                 if (errno == EAGAIN || errno == EINTR) {
-                    nx_user_fd_activate_read(user_fd);
+                    dx_user_fd_activate_read(user_fd);
                     return;
                 }
 
-                nx_log(MODULE, LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
-                nx_server_stop();
+                dx_log(MODULE, LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
+                dx_server_stop();
                 return;
             }
 
             if (len < 20) {
-                nx_free_buffer(buf);
+                dx_free_buffer(buf);
                 continue;
             }
 
-            nx_buffer_insert(buf, len);
+            dx_buffer_insert(buf, len);
             DEQ_INSERT_HEAD(buffers, buf);
-            get_dest_addr(nx_buffer_base(buf), addr_str, 200);
+            get_dest_addr(dx_buffer_base(buf), addr_str, 200);
 
             //
             // Create an AMQP message with the packet's destination address and
             // the whole packet in the message body.  Enqueue the message on the
             // out_messages queue for transmission.
             //
-            msg = nx_allocate_message();
-            nx_message_compose_1(msg, addr_str, &buffers);
+            msg = dx_allocate_message();
+            dx_message_compose_1(msg, addr_str, &buffers);
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(out_messages, msg);
             sys_mutex_unlock(lock);
@@ -164,26 +164,26 @@ static void user_fd_handler(void *context, nx_user_fd_t *ufd)
             // Activate our amqp sender.  This will cause the bridge_writable_handler to be
             // invoked when the amqp socket is willing to accept writes.
             //
-            nx_link_activate(sender);
+            dx_link_activate(sender);
 
-            nx_log(MODULE, LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
+            dx_log(MODULE, LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
         }
     }
 
-    nx_user_fd_activate_read(user_fd); // FIX THIS!!
+    dx_user_fd_activate_read(user_fd); // FIX THIS!!
 }
 
 
-static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t *delivery)
+static void bridge_rx_handler(void *node_context, dx_link_t *link, pn_delivery_t *delivery)
 {
     pn_link_t    *pn_link = pn_delivery_link(delivery);
-    nx_message_t *msg;
+    dx_message_t *msg;
     int           valid_message = 0;
 
     //
     // Extract the message from the incoming delivery.
     //
-    msg = nx_message_receive(delivery);
+    msg = dx_message_receive(delivery);
     if (!msg)
         //
         // The delivery didn't contain the entire message, we'll come through here
@@ -194,7 +194,7 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     //
     // Parse and validate the message up to the message body.
     //
-    valid_message = nx_message_check(msg, NX_DEPTH_BODY);
+    valid_message = dx_message_check(msg, DX_DEPTH_BODY);
 
     //
     // Advance the link and issue flow-control credit.
@@ -207,20 +207,20 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
         // The message is valid.  If it contains a non-null body, enqueue it on the in_messages
         // queue and activate the tunnel FD for write.
         //
-        nx_field_iterator_t *iter = nx_message_field_iterator(msg, NX_FIELD_BODY);
+        dx_field_iterator_t *iter = dx_message_field_iterator(msg, DX_FIELD_BODY);
         if (iter) {
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(in_messages, msg);
             sys_mutex_unlock(lock);
-            nx_user_fd_activate_write(user_fd);
-            nx_field_iterator_free(iter);
+            dx_user_fd_activate_write(user_fd);
+            dx_field_iterator_free(iter);
         }
     } else {
         //
         // The message is malformed in some way.  Reject it.
         //
         pn_delivery_update(delivery, PN_REJECTED);
-        nx_free_message(msg);
+        dx_free_message(msg);
     }
 
     //
@@ -230,10 +230,10 @@ static void bridge_rx_handler(void *node_context, nx_link_t *link, pn_delivery_t
 }
 
 
-static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t *delivery)
+static void bridge_tx_handler(void *node_context, dx_link_t *link, pn_delivery_t *delivery)
 {
     pn_link_t    *pn_link = pn_delivery_link(delivery);
-    nx_message_t *msg;
+    dx_message_t *msg;
     size_t        size;
 
     sys_mutex_lock(lock);
@@ -247,37 +247,37 @@ static void bridge_tx_handler(void *node_context, nx_link_t *link, pn_delivery_t
     size = DEQ_SIZE(out_messages);
     sys_mutex_unlock(lock);
 
-    nx_message_send(msg, pn_link);
+    dx_message_send(msg, pn_link);
 
-    nx_free_message(msg);
+    dx_free_message(msg);
     pn_delivery_settle(delivery);
     pn_link_advance(pn_link);
     pn_link_offered(pn_link, size);
 }
 
 
-static void bridge_disp_handler(void *node_context, nx_link_t *link, pn_delivery_t *delivery)
+static void bridge_disp_handler(void *node_context, dx_link_t *link, pn_delivery_t *delivery)
 {
 }
 
 
-static int bridge_incoming_handler(void *node_context, nx_link_t *link)
-{
-    return 0;
-}
-
-
-static int bridge_outgoing_handler(void *node_context, nx_link_t *link)
+static int bridge_incoming_handler(void *node_context, dx_link_t *link)
 {
     return 0;
 }
 
 
-static int bridge_writable_handler(void *node_context, nx_link_t *link)
+static int bridge_outgoing_handler(void *node_context, dx_link_t *link)
+{
+    return 0;
+}
+
+
+static int bridge_writable_handler(void *node_context, dx_link_t *link)
 {
     int        grant_delivery = 0;
     uint64_t   dtag;
-    pn_link_t *pn_link = nx_link_pn(link);
+    pn_link_t *pn_link = dx_link_pn(link);
 
     sys_mutex_lock(lock);
     if (DEQ_SIZE(out_messages) > 0) {
@@ -299,34 +299,34 @@ static int bridge_writable_handler(void *node_context, nx_link_t *link)
 }
 
 
-static int bridge_detach_handler(void *node_context, nx_link_t *link, int closed)
+static int bridge_detach_handler(void *node_context, dx_link_t *link, int closed)
 {
     return 0;
 }
 
 
-static void bridge_outbound_conn_open_handler(void *type_context, nx_connection_t *conn)
+static void bridge_outbound_conn_open_handler(void *type_context, dx_connection_t *conn)
 {
-    nx_log(MODULE, LOG_INFO, "AMQP Connection Established");
+    dx_log(MODULE, LOG_INFO, "AMQP Connection Established");
 
     // TODO - Get the IP address for the interface (see 'man netdevice')
 
-    sender   = nx_link(node, conn, NX_OUTGOING, "vlan-sender");
-    receiver = nx_link(node, conn, NX_INCOMING, "vlan-receiver");
+    sender   = dx_link(node, conn, DX_OUTGOING, "vlan-sender");
+    receiver = dx_link(node, conn, DX_INCOMING, "vlan-receiver");
 
-    pn_terminus_set_address(nx_link_remote_target(sender), "all");
-    pn_terminus_set_address(nx_link_remote_source(receiver), address);
+    pn_terminus_set_address(dx_link_remote_target(sender), "all");
+    pn_terminus_set_address(dx_link_remote_source(receiver), address);
 
-    pn_terminus_set_address(nx_link_source(sender), "all");
-    pn_terminus_set_address(nx_link_target(receiver), address);
+    pn_terminus_set_address(dx_link_source(sender), "all");
+    pn_terminus_set_address(dx_link_target(receiver), address);
 
-    pn_link_open(nx_link_pn(sender));
-    pn_link_open(nx_link_pn(receiver));
-    pn_link_flow(nx_link_pn(receiver), 10);
+    pn_link_open(dx_link_pn(sender));
+    pn_link_open(dx_link_pn(receiver));
+    pn_link_flow(dx_link_pn(receiver), 10);
 }
 
 
-static const nx_node_type_t node_descriptor = {"vlan-controller", 0, 0,
+static const dx_node_type_t node_descriptor = {"vlan-controller", 0, 0,
                                                bridge_rx_handler,
                                                bridge_tx_handler,
                                                bridge_disp_handler,
@@ -355,7 +355,7 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     fd = tun_open(dev);
 
     if (fd == -1) {
-        nx_log(MODULE, LOG_ERROR, "Tunnel open failed on device %s: %s", dev, strerror(errno));
+        dx_log(MODULE, LOG_ERROR, "Tunnel open failed on device %s: %s", dev, strerror(errno));
         return -1;
     }
 
@@ -363,46 +363,46 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     flags |= O_NONBLOCK;
 
     if (fcntl(fd, F_SETFL, flags) < 0) {
-        nx_log(MODULE, LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
+        dx_log(MODULE, LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
         close(fd);
         return -1;
     }
 
     lock = sys_mutex();
 
-    nx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
+    dx_log(MODULE, LOG_INFO, "Tunnel opened: %s", dev);
 
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);
 
     //
-    // Register the FD as a user-fd to be managed by nexus-server.
+    // Register the FD as a user-fd to be managed by dispatch-server.
     //
-    nx_server_set_user_fd_handler(user_fd_handler);
-    user_fd = nx_user_fd(fd, 0);
+    dx_server_set_user_fd_handler(user_fd_handler);
+    user_fd = dx_user_fd(fd, 0);
     if (user_fd == 0) {
-        nx_log(MODULE, LOG_ERROR, "Failed to create nx_user_fd");
+        dx_log(MODULE, LOG_ERROR, "Failed to create dx_user_fd");
         close(fd);
         return -1;
     }
-    nx_user_fd_activate_read(user_fd);
-    nx_user_fd_activate_write(user_fd);
+    dx_user_fd_activate_read(user_fd);
+    dx_user_fd_activate_write(user_fd);
 
     //
     // Register self as a container type and instance.
     //
-    nx_container_register_node_type(&node_descriptor);
-    node = nx_container_create_node(&node_descriptor, "qnet", 0, NX_DIST_MOVE, NX_LIFE_PERMANENT);
+    dx_container_register_node_type(&node_descriptor);
+    node = dx_container_create_node(&node_descriptor, "qnet", 0, DX_DIST_MOVE, DX_LIFE_PERMANENT);
 
     //
     // Establish an outgoing connection to the server.
     //
-    static nx_server_config_t client_config;
+    static dx_server_config_t client_config;
     client_config.host            = host;
     client_config.port            = port;
     client_config.sasl_mechanisms = "ANONYMOUS";
     client_config.ssl_enabled     = 0;
-    nx_server_connect(&client_config, 0);
+    dx_server_connect(&client_config, 0);
 
     return 0;
 }
