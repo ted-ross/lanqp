@@ -11,14 +11,7 @@
 #include <malloc.h>
 #include <time.h>
 #include <errno.h>
-#include <qpid/dispatch/ctools.h>
-#include <qpid/dispatch/log.h>
-#include <qpid/dispatch/server.h>
-#include <qpid/dispatch/user_fd.h>
-#include <qpid/dispatch/container.h>
-#include <qpid/dispatch/message.h>
-#include <qpid/dispatch/iovec.h>
-#include <qpid/dispatch/threading.h>
+#include "bridge.h"
 
 #define MTU 1500
 
@@ -39,6 +32,7 @@ typedef struct ip_header_t {
 } ip_header_t;
 
 static const char        *MODULE = "BRIDGE";
+static dx_dispatch_t     *dx;
 static dx_user_fd_t      *user_fd;
 static int                fd;
 static dx_node_t         *node;
@@ -136,7 +130,7 @@ static void user_fd_handler(void *context, dx_user_fd_t *ufd)
                 }
 
                 dx_log(MODULE, LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
-                dx_server_stop();
+                dx_server_stop(dx);
                 return;
             }
 
@@ -338,8 +332,9 @@ static const dx_node_type_t node_descriptor = {"vlan-controller", 0, 0,
                                                bridge_outbound_conn_open_handler};
 
 
-int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
+int bridge_setup(dx_dispatch_t *_dx, char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
 {
+    dx = _dx;
     host  = _host;
     port  = _port;
     iface = _iface;
@@ -378,8 +373,8 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     //
     // Register the FD as a user-fd to be managed by dispatch-server.
     //
-    dx_server_set_user_fd_handler(user_fd_handler);
-    user_fd = dx_user_fd(fd, 0);
+    dx_server_set_user_fd_handler(dx, user_fd_handler);
+    user_fd = dx_user_fd(dx, fd, 0);
     if (user_fd == 0) {
         dx_log(MODULE, LOG_ERROR, "Failed to create dx_user_fd");
         close(fd);
@@ -391,8 +386,8 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     //
     // Register self as a container type and instance.
     //
-    dx_container_register_node_type(&node_descriptor);
-    node = dx_container_create_node(&node_descriptor, "qnet", 0, DX_DIST_MOVE, DX_LIFE_PERMANENT);
+    dx_container_register_node_type(dx, &node_descriptor);
+    node = dx_container_create_node(dx, &node_descriptor, "qnet", 0, DX_DIST_MOVE, DX_LIFE_PERMANENT);
 
     //
     // Establish an outgoing connection to the server.
@@ -402,7 +397,7 @@ int bridge_setup(char *_host, char *_port, char *_iface, char *_vlan, char *_ip)
     client_config.port            = port;
     client_config.sasl_mechanisms = "ANONYMOUS";
     client_config.ssl_enabled     = 0;
-    dx_server_connect(&client_config, 0);
+    dx_server_connect(dx, &client_config, 0);
 
     return 0;
 }

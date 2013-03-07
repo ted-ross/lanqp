@@ -18,16 +18,13 @@
  */
 
 #include <stdio.h>
-#include <proton/driver.h>
-#include <qpid/dispatch/server.h>
-#include <qpid/dispatch/container.h>
-#include <qpid/dispatch/timer.h>
-#include <qpid/dispatch/log.h>
-#include <qpid/dispatch/buffer.h>
+#include <qpid/dispatch.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "bridge.h"
+
+static dx_dispatch_t *dx;
 
 static int exit_with_sigint = 0;
 static char *_host;
@@ -41,9 +38,9 @@ static void thread_start_handler(void* context, int thread_id)
 }
 
 
-static void signal_handler(void* context, int signum)
+static void app_signal_handler(void* context, int signum)
 {
-    dx_server_pause();
+    dx_server_pause(dx);
 
     switch (signum) {
     case SIGINT:
@@ -52,7 +49,7 @@ static void signal_handler(void* context, int signum)
     case SIGQUIT:
     case SIGTERM:
         fflush(stdout);
-        dx_server_stop();
+        dx_server_stop(dx);
         break;
 
     case SIGHUP:
@@ -62,18 +59,23 @@ static void signal_handler(void* context, int signum)
         break;
     }
 
-    dx_server_resume();
+    dx_server_resume(dx);
+}
+
+
+static void signal_handler(int signum) {
+    dx_server_signal(dx, signum);
 }
 
 
 static void startup(void *context)
 {
-    dx_server_pause();
-    int setup_result = bridge_setup(_host, _port, _iface, _vlan, _ip);
-    dx_server_resume();
+    dx_server_pause(dx);
+    int setup_result = bridge_setup(dx, _host, _port, _iface, _vlan, _ip);
+    dx_server_resume(dx);
 
     if (setup_result < 0)
-        dx_server_stop();
+        dx_server_stop(dx);
 }
 
 
@@ -93,22 +95,21 @@ int main(int argc, char **argv)
     dx_log_set_mask(LOG_INFO | LOG_ERROR);
     dx_buffer_set_size(1800);
 
-    dx_server_initialize(2);
-    dx_container_initialize();
+    dx = dx_dispatch(2);
 
-    dx_server_set_signal_handler(signal_handler, 0);
-    dx_server_set_start_handler(thread_start_handler, 0);
+    dx_server_set_signal_handler(dx, app_signal_handler, 0);
+    dx_server_set_start_handler(dx, thread_start_handler, 0);
 
-    dx_timer_t *startup_timer = dx_timer(startup, 0);
+    dx_timer_t *startup_timer = dx_timer(dx, startup, 0);
     dx_timer_schedule(startup_timer, 0);
 
-    dx_server_signal(SIGHUP);
-    dx_server_signal(SIGQUIT);
-    dx_server_signal(SIGTERM);
-    dx_server_signal(SIGINT);
+    signal(SIGHUP,  signal_handler);
+    signal(SIGQUIT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGINT,  signal_handler);
 
-    dx_server_run();
-    dx_server_finalize();
+    dx_server_run(dx);
+    dx_dispatch_free(dx);
 
     if (exit_with_sigint) {
 	signal(SIGINT, SIG_DFL);
