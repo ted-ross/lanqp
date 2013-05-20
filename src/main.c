@@ -95,7 +95,7 @@ int main(int argc, char **argv)
     dx_log_set_mask(LOG_INFO | LOG_ERROR);
     dx_buffer_set_size(1800);
 
-    dx = dx_dispatch(2);
+    dx = dx_dispatch(2, "LANQP", 0, 0);
 
     dx_server_set_signal_handler(dx, app_signal_handler, 0);
     dx_server_set_start_handler(dx, thread_start_handler, 0);
