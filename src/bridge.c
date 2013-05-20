@@ -12,6 +12,7 @@
 #include <time.h>
 #include <errno.h>
 #include "bridge.h"
+#include <qpid/dispatch/iterator.h>
 
 #define MTU 1500
 
@@ -93,14 +94,18 @@ static void user_fd_handler(void *context, dx_user_fd_t *ufd)
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
-            dx_iovec_t *iov = dx_message_field_iovec(msg, DX_FIELD_BODY);
+            dx_field_iterator_t *body_iter = dx_message_field_iterator(msg, DX_FIELD_BODY);
+            dx_field_iterator_t *content   = dx_field_raw(body_iter);
+            dx_iovec_t          *iov       = dx_field_iterator_iovec(content);
+            dx_field_iterator_free(content);
+            dx_field_iterator_free(body_iter);
             if (iov) {
                 len = writev(fd, dx_iovec_array(iov), dx_iovec_count(iov));
                 dx_iovec_free(iov);
                 if (len == -1) {
                     if (errno == EAGAIN || errno == EINTR) {
                         //
-                        // FD socked is not accepting writes (it's full).  Activate for write
+                        // FD socket is not accepting writes (it's full).  Activate for write
                         // so we'll come back here when it's again writable.
                         //
                         dx_user_fd_activate_write(user_fd);
