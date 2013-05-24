@@ -55,19 +55,6 @@ static char *vlan;
 
 static void timer_handler(void *unused)
 {
-    size_t in_size;
-    size_t out_size;
-
-    sys_mutex_lock(lock);
-    in_size  = DEQ_SIZE(in_messages);
-    out_size = DEQ_SIZE(out_messages);
-    sys_mutex_unlock(lock);
-
-    printf("IN: %ld, OUT: %ld\n", in_size, out_size);
-
-    if (out_size > 0 && sender)
-        dx_link_activate(sender);
-
     dx_timer_schedule(timer, 1000);
 }
 
@@ -270,8 +257,8 @@ static void bridge_tx_handler(void *node_context, dx_link_t *link, pn_delivery_t
     dx_message_send(msg, pn_link);
 
     dx_free_message(msg);
-    pn_delivery_settle(delivery);
     pn_link_advance(pn_link);
+    pn_delivery_settle(delivery);
     pn_link_offered(pn_link, size);
 }
 
