@@ -13,6 +13,7 @@
 #include <errno.h>
 #include "bridge.h"
 #include <qpid/dispatch/iterator.h>
+#include <qpid/dispatch/timer.h>
 
 #define MTU 1500
 
@@ -43,12 +44,32 @@ static dx_message_list_t  out_messages;
 static dx_message_list_t  in_messages;
 static uint64_t           tag = 1;
 static sys_mutex_t       *lock;
+static dx_timer_t        *timer;
 
 static char *host;
 static char *port;
 static char *iface;
 static char *address;
 static char *vlan;
+
+
+static void timer_handler(void *unused)
+{
+    size_t in_size;
+    size_t out_size;
+
+    sys_mutex_lock(lock);
+    in_size  = DEQ_SIZE(in_messages);
+    out_size = DEQ_SIZE(out_messages);
+    sys_mutex_unlock(lock);
+
+    printf("IN: %ld, OUT: %ld\n", in_size, out_size);
+
+    if (out_size > 0 && sender)
+        dx_link_activate(sender);
+
+    dx_timer_schedule(timer, 1000);
+}
 
 /**
  * get_dest_addr
@@ -321,7 +342,7 @@ static void bridge_outbound_conn_open_handler(void *type_context, dx_connection_
 
     pn_link_open(dx_link_pn(sender));
     pn_link_open(dx_link_pn(receiver));
-    pn_link_flow(dx_link_pn(receiver), 10);
+    pn_link_flow(dx_link_pn(receiver), 1000);
 }
 
 
@@ -387,6 +408,12 @@ int bridge_setup(dx_dispatch_t *_dx, char *_host, char *_port, char *_iface, cha
     }
     dx_user_fd_activate_read(user_fd);
     dx_user_fd_activate_write(user_fd);
+
+    //
+    // Setup periodic timer
+    //
+    timer = dx_timer(dx, timer_handler, 0);
+    dx_timer_schedule(timer, 0);
 
     //
     // Register self as a container type and instance.
