@@ -17,15 +17,26 @@
 ## under the License.
 ##
 
+project(lanqp C)
 cmake_minimum_required(VERSION 2.6)
 set(CMAKE_C_FLAGS "-pthread -Wall -Werror")
 
-project(lanqp C)
 find_library(proton_lib qpid-proton)
 find_path(proton_include proton/driver.h)
-
 find_library(dispatch_lib qpid-dispatch)
 find_path(dispatch_include qpid/dispatch/server.h)
+
+# define the configuration directory based on whether or not the install prefix is defined
+if(NOT DEFINED SYSCONF_INSTALL_DIR)
+    if(CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+        set(SYSCONF_INSTALL_DIR "/etc")
+    else()
+        set(SYSCONF_INSTALL_DIR "${CMAKE_INSTALL_PREFIX}/etc")
+    endif()
+endif()
+
+set(LANQP_CONFDIR ${SYSCONF_INSTALL_DIR})
+set(DEFAULT_CONFIG_PATH "${LANQP_CONFDIR}/lanqp.conf" CACHE string "Default config file path")
 
 include(CheckIncludeFiles)
 check_include_files("linux/if_tun.h" HAVE_LINUX_IF_TUN_H)

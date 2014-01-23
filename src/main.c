@@ -22,25 +22,40 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <getopt.h>
 #include "bridge.h"
+#include "config.h"
 
-static dx_dispatch_t *dx;
+static qd_dispatch_t *dispatch;
+static int            exit_with_sigint = 0;
 
-static int exit_with_sigint = 0;
-static char *_host;
-static char *_port;
-static char *_iface;
-static char *_vlan;
-static char *_ip;
+static const char *app_config =
+    "from qpid_dispatch_internal.config.schema import config_schema\n"
+    "config_schema['vlan'] = (False, {\n"
+    "    'name'    : (str, 0, 'M', None, None),\n"
+    "    'ip-addr' : (str, 0, 'M', None, None),\n"
+    "    'if-name' : (str, 0, 'M', None, None)\n"
+    "    })\n";
 
-static void thread_start_handler(void* context, int thread_id)
+
+/**
+ * This is the OS signal handler, invoked on an undetermined thread at a completely
+ * arbitrary point of time.  It is not safe to do anything here but signal the dispatch
+ * server with the signal number.
+ */
+static void signal_handler(int signum)
 {
+    qd_server_signal(dispatch, signum);
 }
 
 
+/**
+ * This signal handler is called cleanly by one of the server's worker threads in
+ * response to an earlier call to qd_server_signal.
+ */
 static void app_signal_handler(void* context, int signum)
 {
-    dx_server_pause(dx);
+    qd_server_pause(dispatch);
 
     switch (signum) {
     case SIGINT:
@@ -49,7 +64,7 @@ static void app_signal_handler(void* context, int signum)
     case SIGQUIT:
     case SIGTERM:
         fflush(stdout);
-        dx_server_stop(dx);
+        qd_server_stop(dispatch);
         break;
 
     case SIGHUP:
@@ -59,61 +74,76 @@ static void app_signal_handler(void* context, int signum)
         break;
     }
 
-    dx_server_resume(dx);
-}
-
-
-static void signal_handler(int signum) {
-    dx_server_signal(dx, signum);
-}
-
-
-static void startup(void *context)
-{
-    dx_server_pause(dx);
-    int setup_result = bridge_setup(dx, _host, _port, _iface, _vlan, _ip);
-    dx_server_resume(dx);
-
-    if (setup_result < 0)
-        dx_server_stop(dx);
+    qd_server_resume(dispatch);
 }
 
 
 int main(int argc, char **argv)
 {
-    if (argc != 6) {
-        fprintf(stderr, "Usage: %s <host> <port> <interface> <vlan> <ip>\n", argv[0]);
-        return 1;
+#define DEFAULT_DISPATCH_PYTHON_DIR QPID_DISPATCH_HOME_INSTALLED "/python"
+    const char *config_path   = DEFAULT_CONFIG_PATH;
+    const char *python_pkgdir = 0;
+
+    static struct option long_options[] = {
+    {"config",  required_argument, 0, 'c'},
+    {"include", required_argument, 0, 'I'},
+    {"help",    no_argument,       0, 'h'},
+    {0,         0,                 0,  0}
+    };
+
+    while (1) {
+        int c = getopt_long(argc, argv, "c:I:h", long_options, 0);
+        if (c == -1)
+            break;
+
+        switch (c) {
+        case 'c' :
+            config_path = optarg;
+            break;
+
+        //case 'I' :
+        //    python_pkgdir = optarg;
+        //    break;
+
+        case 'h' :
+            printf("Usage: %s [OPTION]\n\n", argv[0]);
+            printf("  -c, --config=PATH (%s)\n", DEFAULT_CONFIG_PATH);
+            printf("                             Load configuration from file at PATH\n");
+            //printf("  -I, --include=PATH (%s)\n", DEFAULT_DISPATCH_PYTHON_DIR);
+            //printf("                             Location of Dispatch's Python library\n");
+            printf("  -h, --help                 Print this help\n");
+            exit(0);
+
+        case '?' :
+            exit(1);
+        }
     }
 
-    _host  = argv[1];
-    _port  = argv[2];
-    _iface = argv[3];
-    _vlan  = argv[4];
-    _ip    = argv[5];
+    qd_log_set_mask(QD_LOG_INFO | QD_LOG_ERROR);
+    qd_buffer_set_size(1800);
 
-    dx_log_set_mask(LOG_INFO | LOG_ERROR);
-    dx_buffer_set_size(1800);
+    dispatch = qd_dispatch(python_pkgdir);
+    qd_dispatch_extend_config_schema(dispatch, app_config);
+    qd_dispatch_load_config(dispatch, config_path);
+    qd_dispatch_configure_container(dispatch);
+    qd_dispatch_prepare(dispatch);
+    if (bridge_setup(dispatch) < 0)
+        exit(1);
+    qd_dispatch_post_configure_connections(dispatch);
 
-    dx = dx_dispatch(2, "LANQP", 0, 0);
-
-    dx_server_set_signal_handler(dx, app_signal_handler, 0);
-    dx_server_set_start_handler(dx, thread_start_handler, 0);
-
-    dx_timer_t *startup_timer = dx_timer(dx, startup, 0);
-    dx_timer_schedule(startup_timer, 0);
+    qd_server_set_signal_handler(dispatch, app_signal_handler, 0);
 
     signal(SIGHUP,  signal_handler);
     signal(SIGQUIT, signal_handler);
     signal(SIGTERM, signal_handler);
     signal(SIGINT,  signal_handler);
 
-    dx_server_run(dx);
-    dx_dispatch_free(dx);
+    qd_server_run(dispatch);
+    qd_dispatch_free(dispatch);
 
     if (exit_with_sigint) {
-	signal(SIGINT, SIG_DFL);
-	kill(getpid(), SIGINT);
+        signal(SIGINT, SIG_DFL);
+        kill(getpid(), SIGINT);
     }
 
     return 0;
