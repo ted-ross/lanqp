@@ -68,7 +68,7 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
 
     if ((hdr->ver_hlen & 0xf0) == 0x40) {
         uint32_t ip4_addr = ntohl(hdr->dst_addr);
-        snprintf(addr, len, "%s.%d.%d.%d.%d", vlan,
+        snprintf(addr, len, "%s/%d.%d.%d.%d", vlan,
                  (ip4_addr & 0xFF000000) >> 24,
                  (ip4_addr & 0x00FF0000) >> 16,
                  (ip4_addr & 0x0000FF00) >> 8,
