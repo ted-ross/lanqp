@@ -182,9 +182,10 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
 
 static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t *delivery)
 {
-    pn_link_t    *pn_link = pn_delivery_link(qd_delivery_pn(delivery));
-    qd_message_t *msg;
-    int           valid_message = 0;
+    pn_link_t           *pn_link = qd_link_pn(link);
+    qd_message_t        *msg;
+    int                  valid_message = 0;
+    qd_field_iterator_t *iter = 0;
 
     //
     // Extract the message from the incoming delivery.
@@ -201,6 +202,8 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
     // Parse and validate the message up to the message body.
     //
     valid_message = qd_message_check(msg, QD_DEPTH_BODY);
+    if (valid_message)
+        iter = qd_message_field_iterator(msg, QD_FIELD_BODY);
 
     //
     // Advance the link and issue flow-control credit.
@@ -214,12 +217,13 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
         // The message is valid.  If it contains a non-null body, enqueue it on the in_messages
         // queue and activate the tunnel FD for write.
         //
-        qd_field_iterator_t *iter = qd_message_field_iterator(msg, QD_FIELD_BODY);
         if (iter) {
             DEQ_INSERT_TAIL(in_messages, msg);
             qd_user_fd_activate_write(user_fd);
             qd_field_iterator_free(iter);
         }
+
+        qd_delivery_free_LH(delivery, PN_ACCEPTED);
     } else {
         //
         // The message is malformed in some way.  Reject it.
@@ -228,10 +232,6 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
         qd_message_free(msg);
     }
 
-    //
-    // No matter what happened with the message, settle the delivery.
-    //
-    qd_delivery_free_LH(delivery, PN_ACCEPTED);
     sys_mutex_unlock(lock);
 }
 
@@ -288,10 +288,13 @@ static int bridge_writable_handler(void *node_context, qd_link_t *link)
     while (msg) {
         DEQ_REMOVE_HEAD(to_send);
         dtag++;
-        qd_delivery(link, pn_dtag((char*) &dtag, 8));
+        qd_delivery_t *delivery = qd_delivery(link, pn_dtag((char*) &dtag, 8));
         qd_message_send(msg, link);
         pn_link_advance(pn_link);
         event_count++;
+        sys_mutex_lock(lock);
+        qd_delivery_free_LH(delivery, 0);
+        sys_mutex_unlock(lock);
         qd_message_free(msg);
         msg = DEQ_HEAD(to_send);
     }
@@ -318,15 +321,10 @@ static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_
 {
     qd_log(MODULE, QD_LOG_INFO, "AMQP Connection Established");
 
-    // TODO - Get the IP address for the interface (see 'man netdevice')
-
     sender   = qd_link(node, conn, QD_OUTGOING, "vlan-sender");
     receiver = qd_link(node, conn, QD_INCOMING, "vlan-receiver");
 
-    //pn_terminus_set_address(qd_link_remote_target(sender), "all");
     pn_terminus_set_address(qd_link_source(receiver), address);
-
-    //pn_terminus_set_address(qd_link_source(sender), "all");
     pn_terminus_set_address(qd_link_remote_target(receiver), address);
 
     pn_link_open(qd_link_pn(sender));
