@@ -36,6 +36,7 @@ typedef struct ip_header_t {
 
 static const char        *MODULE = "BRIDGE";
 static qd_dispatch_t     *dx;
+static qd_log_source_t   *log_source = 0;
 static qd_user_fd_t      *user_fd;
 static int                fd;
 static qd_node_t         *node;
@@ -49,7 +50,6 @@ static qd_timer_t        *timer;
 
 static       char *address;
 static const char *vlan;
-
 
 static void timer_handler(void *unused)
 {
@@ -123,7 +123,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
 
             DEQ_REMOVE_HEAD(in_messages);
             qd_message_free(msg);
-            qd_log(MODULE, QD_LOG_TRACE, "Inbound Datagram: len=%ld", len);
+            qd_log(log_source, QD_LOG_TRACE, "Inbound Datagram: len=%ld", len);
             msg = DEQ_HEAD(in_messages);
         }
         sys_mutex_unlock(lock);
@@ -141,7 +141,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
                     return;
                 }
 
-                qd_log(MODULE, QD_LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
+                qd_log(log_source, QD_LOG_ERROR, "Error on tunnel fd: %s", strerror(errno));
                 qd_server_stop(dx);
                 return;
             }
@@ -172,7 +172,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
             //
             qd_link_activate(sender);
 
-            qd_log(MODULE, QD_LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
+            qd_log(log_source, QD_LOG_TRACE, "Outbound Datagram: dest=%s len=%ld", addr_str, len);
         }
     }
 
@@ -317,9 +317,9 @@ static int bridge_detach_handler(void *node_context, qd_link_t *link, int closed
 }
 
 
-static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_t *conn)
+static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_t *conn, void *context)
 {
-    qd_log(MODULE, QD_LOG_INFO, "AMQP Connection Established");
+    qd_log(log_source, QD_LOG_INFO, "AMQP Connection Established");
 
     sender   = qd_link(node, conn, QD_OUTGOING, "vlan-sender");
     receiver = qd_link(node, conn, QD_INCOMING, "vlan-receiver");
@@ -341,7 +341,8 @@ static const qd_node_type_t node_descriptor = {"vlan-controller", 0, 0,
                                                bridge_writable_handler,
                                                bridge_detach_handler,
                                                0, 0, 0,
-                                               bridge_outbound_conn_open_handler};
+                                               bridge_outbound_conn_open_handler
+};
 
 static const char *CONF_VLAN      = "vlan";
 static const char *CONF_VLAN_NAME = "name";
@@ -370,14 +371,16 @@ int bridge_setup(qd_dispatch_t *_dx)
     strcat(address, "/");
     strcat(address, _ip);
 
-    qd_log(MODULE, QD_LOG_INFO, "Creating Endpoint '%s' on Interface '%s'", address, _if);
+    log_source = qd_log_source(MODULE);
+
+    qd_log(log_source, QD_LOG_INFO, "Creating Endpoint '%s' on Interface '%s'", address, _if);
 
     char *dev = malloc(10);
     strcpy(dev, _if);
     fd = tun_open(dev);
 
     if (fd == -1) {
-        qd_log(MODULE, QD_LOG_ERROR, "Tunnel open failed on device %s: %s", dev, strerror(errno));
+        qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s: %s", dev, strerror(errno));
         return -1;
     }
 
@@ -385,14 +388,14 @@ int bridge_setup(qd_dispatch_t *_dx)
     flags |= O_NONBLOCK;
 
     if (fcntl(fd, F_SETFL, flags) < 0) {
-        qd_log(MODULE, QD_LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
+        qd_log(log_source, QD_LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
         close(fd);
         return -1;
     }
 
     lock = sys_mutex();
 
-    qd_log(MODULE, QD_LOG_INFO, "Tunnel opened: %s", dev);
+    qd_log(log_source, QD_LOG_INFO, "Tunnel opened: %s", dev);
 
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);
@@ -403,7 +406,7 @@ int bridge_setup(qd_dispatch_t *_dx)
     qd_server_set_user_fd_handler(dx, user_fd_handler);
     user_fd = qd_user_fd(dx, fd, 0);
     if (user_fd == 0) {
-        qd_log(MODULE, QD_LOG_ERROR, "Failed to create qd_user_fd");
+        qd_log(log_source, QD_LOG_ERROR, "Failed to create qd_user_fd");
         close(fd);
         return -1;
     }
