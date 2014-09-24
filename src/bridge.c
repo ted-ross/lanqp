@@ -14,7 +14,6 @@
 #include "bridge.h"
 #include <qpid/dispatch/iterator.h>
 #include <qpid/dispatch/timer.h>
-#include <qpid/dispatch/config.h>
 
 #define MTU 1500
 
@@ -49,7 +48,7 @@ static sys_mutex_t       *lock;
 static qd_timer_t        *timer;
 
 static       char *address;
-static const char *vlan;
+static const char *vlan = "vlan0";
 
 static void timer_handler(void *unused)
 {
@@ -344,27 +343,41 @@ static const qd_node_type_t node_descriptor = {"vlan-controller", 0, 0,
                                                bridge_outbound_conn_open_handler
 };
 
-static const char *CONF_VLAN      = "vlan";
-static const char *CONF_VLAN_NAME = "name";
-static const char *CONF_VLAN_IP   = "ip-addr";
-static const char *CONF_VLAN_IF   = "if-name";
+//static const char *CONF_VLAN      = "vlan";
+//static const char *CONF_VLAN_NAME = "name";
+//static const char *CONF_VLAN_IP   = "ip-addr";
+//static const char *CONF_VLAN_IF   = "if-name";
 
 
 int bridge_setup(qd_dispatch_t *_dx)
 {
-    const char *_ip   = 0;
-    const char *_if   = 0;
+    const char *_ip   = "10.1.1.1";
+    const char *_if   = "lanq0";
+
+    const char *env;
+
+    if ((env = getenv("LANQP_VLAN")))
+        vlan = env;
+
+    if ((env = getenv("LANQP_IF")))
+        _if = env;
+
+    _ip = getenv("LANQP_IP");
+    if (!_ip) {
+        printf("Environment variable LANQP_IP not set\n");
+        exit(1);
+    }
 
     dx = _dx;
 
     // TODO - Get vlan configuration from the config file
 
-    int count = qd_config_item_count(dx, CONF_VLAN);
-    if (count > 0) {
-        vlan  = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_NAME);
-        _ip   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IP);
-        _if   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IF);
-    }
+    //    int count = qd_config_item_count(dx, CONF_VLAN);
+    //    if (count > 0) {
+    //        vlan  = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_NAME);
+    //        _ip   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IP);
+    //        _if   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IF);
+    //    }
 
     address = (char*) malloc(strlen(vlan) + strlen(_ip) + 1);
     strcpy(address, vlan);

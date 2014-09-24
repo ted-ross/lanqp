@@ -92,17 +92,18 @@ static int tun_open_common(char *dev, int istun)
 
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = (istun ? IFF_TUN : IFF_TAP) | IFF_NO_PI;
-    if (*dev)
-       strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+    if (*dev) {
+        strncpy(ifr.ifr_name, dev, IFNAMSIZ);
+    }
 
     if (ioctl(fd, TUNSETIFF, (void *) &ifr) < 0) {
-       if (errno == EBADFD) {
-	  /* Try old ioctl */
- 	  if (ioctl(fd, OTUNSETIFF, (void *) &ifr) < 0) 
-	     goto failed;
-       } else
-          goto failed;
-    } 
+        if (errno == EBADFD) {
+            /* Try old ioctl */
+            if (ioctl(fd, OTUNSETIFF, (void *) &ifr) < 0) 
+                goto failed;
+        } else
+            goto failed;
+    }
 
     strcpy(dev, ifr.ifr_name);
     return fd;
