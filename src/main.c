@@ -93,7 +93,7 @@ static void check(int fd) {
 static void main_process(const char *config_path, const char *python_pkgdir, const char *qpid_dispatch_lib, int fd)
 {
     qd_error_clear();
-    dispatch = qd_dispatch(python_pkgdir, qpid_dispatch_lib);
+    dispatch = qd_dispatch(python_pkgdir);
     check(fd);
     log_source = qd_log_source("MAIN"); /* Logging is initialized by qd_dispatch. */
     qd_dispatch_load_config(dispatch, config_path);
