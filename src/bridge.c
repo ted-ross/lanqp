@@ -86,6 +86,30 @@ static void timer_handler(void *unused)
     qd_timer_schedule(timer, 1000);
 }
 
+static void ip6_segment(char *out, const uint16_t *addr, int idx)
+{
+    uint16_t seg = ntohs(addr[idx]);
+
+    *out = '\0';
+
+    if (idx == 0) {
+        if (seg == 0)
+            strcpy(":", out);
+        else
+            sprintf(out, "%x:", seg);
+    } else {
+        if (seg == 0 && idx == 7)
+            strcpy(":", out);
+        else if (seg > 0) {
+            uint16_t prev = ntohs(addr[idx - 1]);
+            if (prev == 0)
+                sprintf(out, ":%x%c", seg, idx < 7 ? ':' : '\0');
+            else
+                sprintf(out, "%x:", seg);
+        }
+    }
+}
+
 /**
  * get_dest_addr
  *
@@ -104,15 +128,14 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
                  (ip4_addr & 0x0000FF00) >> 8,
                  (ip4_addr & 0x000000FF));
     } else {
-        snprintf(addr, len, "u/%s/%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x", vlan,
-                 ntohs(hdr->v6.v6_dst_addr[0]),
-                 ntohs(hdr->v6.v6_dst_addr[1]),
-                 ntohs(hdr->v6.v6_dst_addr[2]),
-                 ntohs(hdr->v6.v6_dst_addr[3]),
-                 ntohs(hdr->v6.v6_dst_addr[4]),
-                 ntohs(hdr->v6.v6_dst_addr[5]),
-                 ntohs(hdr->v6.v6_dst_addr[6]),
-                 ntohs(hdr->v6.v6_dst_addr[7]));
+        char seg[8][8];
+        int  idx;
+
+        for (idx = 0; idx < 8; idx++)
+            ip6_segment(seg[idx], hdr->v6.v6_dst_addr, idx);
+
+        snprintf(addr, len, "u/%s/%s%s%s%s%s%s%s%s", vlan,
+                 seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6], seg[7]);
     }
 }
 
