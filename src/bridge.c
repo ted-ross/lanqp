@@ -45,14 +45,16 @@ static qd_user_fd_t      *user_fd;
 static int                fd;
 static qd_node_t         *node;
 static qd_link_t         *sender;
-static qd_link_t         *receiver;
+static qd_link_t         *receiver4;
+static qd_link_t         *receiver6;
 static qd_message_list_t  out_messages;
 static qd_message_list_t  in_messages;
 static uint64_t           tag = 1;
 static sys_mutex_t       *lock;
 static qd_timer_t        *timer;
 
-static       char *address;
+static       char *address4;
+static       char *address6;
 static const char *vlan = "vlan0";
 
 /*
@@ -360,15 +362,25 @@ static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_
 {
     qd_log(log_source, QD_LOG_INFO, "AMQP Connection Established");
 
-    sender   = qd_link(node, conn, QD_OUTGOING, "vlan-sender");
-    receiver = qd_link(node, conn, QD_INCOMING, "vlan-receiver");
+    sender = qd_link(node, conn, QD_OUTGOING, "vlan-sender");
 
-    pn_terminus_set_address(qd_link_source(receiver), address);
-    pn_terminus_set_address(qd_link_remote_target(receiver), address);
+    if (address4) {
+        receiver4 = qd_link(node, conn, QD_INCOMING, "vlan-receiver4");
+        pn_terminus_set_address(qd_link_source(receiver4), address4);
+        pn_terminus_set_address(qd_link_remote_target(receiver4), address4);
+        pn_link_open(qd_link_pn(receiver4));
+        pn_link_flow(qd_link_pn(receiver4), 40);
+    }
+
+    if (address6) {
+        receiver6 = qd_link(node, conn, QD_INCOMING, "vlan-receiver6");
+        pn_terminus_set_address(qd_link_source(receiver6), address6);
+        pn_terminus_set_address(qd_link_remote_target(receiver6), address6);
+        pn_link_open(qd_link_pn(receiver6));
+        pn_link_flow(qd_link_pn(receiver6), 40);
+    }
 
     pn_link_open(qd_link_pn(sender));
-    pn_link_open(qd_link_pn(receiver));
-    pn_link_flow(qd_link_pn(receiver), 1000);
 }
 
 
@@ -391,8 +403,9 @@ static const qd_node_type_t node_descriptor = {"vlan-controller", 0, 0,
 
 int bridge_setup(qd_dispatch_t *_dx)
 {
-    const char *_ip   = "10.1.1.1";
-    const char *_if   = "lanq0";
+    const char *_ip4 = 0;
+    const char *_ip6 = 0;
+    const char *_if  = "lanq0";
 
     const char *env;
 
@@ -402,9 +415,10 @@ int bridge_setup(qd_dispatch_t *_dx)
     if ((env = getenv("LANQP_IF")))
         _if = env;
 
-    _ip = getenv("LANQP_IP");
-    if (!_ip) {
-        printf("Environment variable LANQP_IP not set\n");
+    _ip4 = getenv("LANQP_IP");
+    _ip6 = getenv("LANQP_IP6");
+    if (!_ip4 && !_ip6) {
+        printf("Environment variables LANQP_IP abd LANQP_IP6 not set\n");
         exit(1);
     }
 
@@ -419,15 +433,27 @@ int bridge_setup(qd_dispatch_t *_dx)
     //        _if   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IF);
     //    }
 
-    address = (char*) malloc(strlen(vlan) + strlen(_ip) + 3);
-    strcpy(address, "u/");
-    strcat(address, vlan);
-    strcat(address, "/");
-    strcat(address, _ip);
+    if (_ip4) {
+        address4 = (char*) malloc(strlen(vlan) + strlen(_ip4) + 3);
+        strcpy(address4, "u/");
+        strcat(address4, vlan);
+        strcat(address4, "/");
+        strcat(address4, _ip4);
+    }
+
+    if (_ip6) {
+        address6 = (char*) malloc(strlen(vlan) + strlen(_ip6) + 3);
+        strcpy(address6, "u/");
+        strcat(address6, vlan);
+        strcat(address6, "/");
+        strcat(address6, _ip6);
+    }
 
     log_source = qd_log_source(MODULE);
 
-    qd_log(log_source, QD_LOG_INFO, "Creating Endpoint '%s' on Interface '%s'", address, _if);
+    qd_log(log_source, QD_LOG_INFO, "Creating Endpoint on Interface '%s'", _if);
+    if (address4) qd_log(log_source, QD_LOG_INFO, "IPv4 Address: %s", address4);
+    if (address6) qd_log(log_source, QD_LOG_INFO, "IPv6 Address: %s", address6);
 
     char *dev = malloc(10);
     strcpy(dev, _if);
