@@ -111,7 +111,6 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
                  ntohs(hdr->v6.v6_dst_addr[5]),
                  ntohs(hdr->v6.v6_dst_addr[6]),
                  ntohs(hdr->v6.v6_dst_addr[7]));
-        addr[0] = '\0';
     }
 }
 
