@@ -21,16 +21,21 @@ int tap_open(char *dev);
 int tun_open(char *dev);
 
 typedef struct ip_header_t {
-    uint8_t  ver_hlen;
-    uint8_t  tos;
-    uint16_t len;
-    uint16_t id;
-    uint16_t flags_offset;
-    uint8_t  ttl;
-    uint8_t  protocol;
-    uint16_t hcksum;
-    uint32_t src_addr;
-    uint32_t dst_addr;
+    uint8_t  version;
+    uint8_t  field1;
+    uint16_t field2;
+    uint32_t field3;
+    union {
+        struct {
+            uint32_t field4;
+            uint32_t v4_src_addr;
+            uint32_t v4_dst_addr;
+        } v4;
+        struct {
+            uint16_t v6_src_addr[8];
+            uint16_t v6_dst_addr[8];
+        } v6;
+    };
 } ip_header_t;
 
 static const char        *MODULE = "BRIDGE";
@@ -50,6 +55,30 @@ static qd_timer_t        *timer;
 static       char *address;
 static const char *vlan = "vlan0";
 
+/*
+typedef struct {
+    const char      *label;
+    struct timespec  ts;
+} lq_timeitem;
+
+static lq_timeitem timeItems[10];
+static int         timeItemIndex = 0;
+
+static void lq_timestamp_LH(const char *label)
+{
+    timeItems[timeItemIndex].label = label;
+    clock_gettime(CLOCK_REALTIME, &timeItems[timeItemIndex].ts);
+    timeItemIndex++;
+
+    if (timeItemIndex == 10) {
+        int i;
+        timeItemIndex = 0;
+        for (i = 0; i < 10; i++)
+            printf("%ld:%ld - %s\n", timeItems[i].ts.tv_sec, timeItems[i].ts.tv_nsec, timeItems[i].label);
+    }
+}
+*/
+
 static void timer_handler(void *unused)
 {
     qd_timer_schedule(timer, 1000);
@@ -65,15 +94,23 @@ static void get_dest_addr(unsigned char *buffer, char *addr, int len)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
 
-    if ((hdr->ver_hlen & 0xf0) == 0x40) {
-        uint32_t ip4_addr = ntohl(hdr->dst_addr);
-        snprintf(addr, len, "%s/%d.%d.%d.%d", vlan,
+    if ((hdr->version & 0xf0) == 0x40) {
+        uint32_t ip4_addr = ntohl(hdr->v4.v4_dst_addr);
+        snprintf(addr, len, "u/%s/%d.%d.%d.%d", vlan,
                  (ip4_addr & 0xFF000000) >> 24,
                  (ip4_addr & 0x00FF0000) >> 16,
                  (ip4_addr & 0x0000FF00) >> 8,
                  (ip4_addr & 0x000000FF));
     } else {
-        // TODO - Generate an address for an IPv6 destination
+        snprintf(addr, len, "u/%s/%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x", vlan,
+                 ntohs(hdr->v6.v6_dst_addr[0]),
+                 ntohs(hdr->v6.v6_dst_addr[1]),
+                 ntohs(hdr->v6.v6_dst_addr[2]),
+                 ntohs(hdr->v6.v6_dst_addr[3]),
+                 ntohs(hdr->v6.v6_dst_addr[4]),
+                 ntohs(hdr->v6.v6_dst_addr[5]),
+                 ntohs(hdr->v6.v6_dst_addr[6]),
+                 ntohs(hdr->v6.v6_dst_addr[7]));
         addr[0] = '\0';
     }
 }
@@ -99,6 +136,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
         sys_mutex_lock(lock);
         msg = DEQ_HEAD(in_messages);
         while (msg) {
+            //lq_timestamp_LH("Write to Tunnel");
             qd_field_iterator_t *body_iter    = qd_message_field_iterator(msg, QD_FIELD_BODY);
             qd_parsed_field_t   *content      = qd_parse(body_iter);
             qd_field_iterator_t *content_iter = qd_parse_raw(content);
@@ -163,6 +201,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
             qd_message_compose_1(msg, addr_str, &buffers);
             sys_mutex_lock(lock);
             DEQ_INSERT_TAIL(out_messages, msg);
+            //lq_timestamp_LH("Read from Tunnel");
             sys_mutex_unlock(lock);
 
             //
@@ -220,6 +259,7 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
             DEQ_INSERT_TAIL(in_messages, msg);
             qd_user_fd_activate_write(user_fd);
             qd_field_iterator_free(iter);
+            //lq_timestamp_LH("Received encapsulated PDU");
         }
 
         qd_delivery_free_LH(delivery, PN_ACCEPTED);
@@ -273,6 +313,7 @@ static int bridge_writable_handler(void *node_context, qd_link_t *link)
         while (msg) {
             DEQ_REMOVE_HEAD(out_messages);
             DEQ_INSERT_TAIL(to_send, msg);
+            //lq_timestamp_LH("Sending encapsulated PDU");
             if (DEQ_SIZE(to_send) == link_credit)
                 break;
             msg = DEQ_HEAD(out_messages);
@@ -379,8 +420,9 @@ int bridge_setup(qd_dispatch_t *_dx)
     //        _if   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IF);
     //    }
 
-    address = (char*) malloc(strlen(vlan) + strlen(_ip) + 1);
-    strcpy(address, vlan);
+    address = (char*) malloc(strlen(vlan) + strlen(_ip) + 3);
+    strcpy(address, "u/");
+    strcat(address, vlan);
     strcat(address, "/");
     strcat(address, _ip);
 
