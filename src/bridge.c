@@ -17,7 +17,6 @@
 
 #define MTU 1500
 
-int tap_open(char *dev);
 int tun_open(char *dev);
 
 typedef struct ip_header_t {
@@ -424,7 +423,7 @@ static const qd_node_type_t node_descriptor = {"vlan-controller", 0, 0,
 //static const char *CONF_VLAN_IF   = "if-name";
 
 
-int bridge_setup(qd_dispatch_t *_dx)
+int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
 {
     const char *_ip4 = 0;
     const char *_ip6 = 0;

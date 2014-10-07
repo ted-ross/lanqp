@@ -90,7 +90,8 @@ static void check(int fd) {
 }
 
 
-static void main_process(const char *config_path, const char *python_pkgdir, const char *qpid_dispatch_lib, int fd)
+static void main_process(const char *config_path, const char *python_pkgdir, const char *qpid_dispatch_lib,
+                         const char *ns_pid, int fd)
 {
     qd_error_clear();
     dispatch = qd_dispatch(python_pkgdir);
@@ -109,7 +110,7 @@ static void main_process(const char *config_path, const char *python_pkgdir, con
     signal(SIGINT,  signal_handler);
 
     qd_buffer_set_size(1800);
-    if (bridge_setup(dispatch) < 0)
+    if (bridge_setup(dispatch, ns_pid) < 0)
         exit(1);
 
     if (fd > 0) {
@@ -128,7 +129,7 @@ static void main_process(const char *config_path, const char *python_pkgdir, con
 
 
 static void daemon_process(const char *config_path, const char *python_pkgdir, const char *qpid_dispatch_lib,
-                           const char *pidfile, const char *user)
+                           const char *ns_pid, const char *pidfile, const char *user)
 {
     int pipefd[2];
 
@@ -239,7 +240,7 @@ static void daemon_process(const char *config_path, const char *python_pkgdir, c
                 }
             }
 
-            main_process(config_path, python_pkgdir, qpid_dispatch_lib, pipefd[1]);
+            main_process(config_path, python_pkgdir, qpid_dispatch_lib, ns_pid, pipefd[1]);
         } else
             //
             // Exit first child
@@ -271,12 +272,14 @@ int main(int argc, char **argv)
     const char *config_path   = DEFAULT_CONFIG_PATH;
     const char *python_pkgdir = "/usr/lib/qpid-dispatch/python";
     const char *qpid_dispatch_lib = 0;
+    const char *ns_pid  = 0;
     const char *pidfile = 0;
     const char *user    = 0;
     bool        daemon_mode = false;
 
     static struct option long_options[] = {
     {"config",  required_argument, 0, 'c'},
+    {"nspid",   required_argument, 0, 'n'},
     {"daemon",  no_argument,       0, 'd'},
     {"pidfile", required_argument, 0, 'P'},
     {"user",    required_argument, 0, 'U'},
@@ -285,13 +288,17 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int c = getopt_long(argc, argv, "c:dP:U:h", long_options, 0);
+        int c = getopt_long(argc, argv, "c:n:dP:U:h", long_options, 0);
         if (c == -1)
             break;
 
         switch (c) {
         case 'c' :
             config_path = optarg;
+            break;
+
+        case 'n' :
+            ns_pid = optarg;
             break;
 
         case 'd' :
@@ -310,6 +317,7 @@ int main(int argc, char **argv)
             printf("Usage: %s [OPTIONS]\n\n", argv[0]);
             printf("  -c, --config=PATH (%s)\n", DEFAULT_CONFIG_PATH);
             printf("                             Load configuration from file at PATH\n");
+            printf("  -n, --nspid                PID of the target container\n");
             printf("  -d, --daemon               Run process as a SysV-style daemon\n");
             printf("  -P, --pidfile              If daemon, the file for the stored daemon pid\n");
             printf("  -U, --user                 If daemon, the username to run as\n");
@@ -322,9 +330,9 @@ int main(int argc, char **argv)
     }
 
     if (daemon_mode)
-        daemon_process(config_path, python_pkgdir, qpid_dispatch_lib, pidfile, user);
+        daemon_process(config_path, python_pkgdir, qpid_dispatch_lib, ns_pid, pidfile, user);
     else
-        main_process(config_path, python_pkgdir, qpid_dispatch_lib, -1);
+        main_process(config_path, python_pkgdir, qpid_dispatch_lib, ns_pid, -1);
 
     return 0;
 }
