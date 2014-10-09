@@ -55,6 +55,7 @@ include_directories(
 set(lanqp_SOURCES
     src/bridge.c
     src/main.c
+    src/netns.c
     src/tun_dev.c
     )
 

@@ -31,12 +31,11 @@
 #include <time.h>
 #include <errno.h>
 #include "bridge.h"
+#include "netns.h"
 #include <qpid/dispatch/iterator.h>
 #include <qpid/dispatch/timer.h>
 
 #define MTU 1500
-
-int tun_open(char *dev);
 
 typedef struct ip_header_t {
     uint8_t  version;
@@ -459,7 +458,7 @@ int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
     _ip4 = getenv("LANQP_IP");
     _ip6 = getenv("LANQP_IP6");
     if (!_ip4 && !_ip6) {
-        printf("Environment variables LANQP_IP abd LANQP_IP6 not set\n");
+        printf("Environment variables LANQP_IP and LANQP_IP6 not set\n");
         exit(1);
     }
 
@@ -498,10 +497,10 @@ int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
 
     char *dev = malloc(10);
     strcpy(dev, _if);
-    fd = tun_open(dev);
+    fd = open_tunnel_in_ns(dev, ns_pid);
 
     if (fd == -1) {
-        qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s: %s", dev, strerror(errno));
+        qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s", dev);
         return -1;
     }
 
@@ -516,7 +515,7 @@ int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
 
     lock = sys_mutex();
 
-    qd_log(log_source, QD_LOG_INFO, "Tunnel opened: %s", dev);
+    qd_log(log_source, QD_LOG_INFO, "Tunnel opened: %s, fd=%d", dev, fd);
 
     DEQ_INIT(out_messages);
     DEQ_INIT(in_messages);
