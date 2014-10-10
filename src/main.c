@@ -279,7 +279,6 @@ int main(int argc, char **argv)
 
     static struct option long_options[] = {
     {"config",  required_argument, 0, 'c'},
-    {"nspid",   required_argument, 0, 'n'},
     {"daemon",  no_argument,       0, 'd'},
     {"pidfile", required_argument, 0, 'P'},
     {"user",    required_argument, 0, 'U'},
@@ -288,17 +287,13 @@ int main(int argc, char **argv)
     };
 
     while (1) {
-        int c = getopt_long(argc, argv, "c:n:dP:U:h", long_options, 0);
+        int c = getopt_long(argc, argv, "c:dP:U:h", long_options, 0);
         if (c == -1)
             break;
 
         switch (c) {
         case 'c' :
             config_path = optarg;
-            break;
-
-        case 'n' :
-            ns_pid = optarg;
             break;
 
         case 'd' :
@@ -317,7 +312,6 @@ int main(int argc, char **argv)
             printf("Usage: %s [OPTIONS]\n\n", argv[0]);
             printf("  -c, --config=PATH (%s)\n", DEFAULT_CONFIG_PATH);
             printf("                             Load configuration from file at PATH\n");
-            printf("  -n, --nspid                PID of the target container\n");
             printf("  -d, --daemon               Run process as a SysV-style daemon\n");
             printf("  -P, --pidfile              If daemon, the file for the stored daemon pid\n");
             printf("  -U, --user                 If daemon, the username to run as\n");

@@ -34,6 +34,7 @@
 #include "netns.h"
 #include <qpid/dispatch/iterator.h>
 #include <qpid/dispatch/timer.h>
+#include <qpid/dispatch/ctools.h>
 
 #define MTU 1500
 
@@ -55,24 +56,33 @@ typedef struct ip_header_t {
     };
 } ip_header_t;
 
+typedef struct tunnel_t {
+    DEQ_LINKS(struct tunnel_t);
+    const char        *name;
+    const char        *ns_pid;
+    const char        *vlan;
+    const char        *ip_addr;
+    const char        *ip6_addr;
+    int                fd;
+    qd_user_fd_t      *ufd;
+    qd_link_t         *ip_link;
+    qd_link_t         *ip6_link;
+    qd_message_list_t  in_messages;
+} tunnel_t;
+
+DEQ_DECLARE(tunnel_t, tunnel_list_t);
+
+
 static const char        *MODULE = "BRIDGE";
 static qd_dispatch_t     *dx;
 static qd_log_source_t   *log_source = 0;
-static qd_user_fd_t      *user_fd;
-static int                fd;
 static qd_node_t         *node;
 static qd_link_t         *sender;
-static qd_link_t         *receiver4;
-static qd_link_t         *receiver6;
 static qd_message_list_t  out_messages;
-static qd_message_list_t  in_messages;
 static uint64_t           tag = 1;
 static sys_mutex_t       *lock;
 static qd_timer_t        *timer;
-
-static       char *address4;
-static       char *address6;
-static const char *vlan = "vlan0";
+static tunnel_list_t      tunnels;
 
 /*
 typedef struct {
@@ -133,7 +143,7 @@ static void ip6_segment(char *out, const uint16_t *addr, int idx)
  * Given a buffer received from the tunnel interface, extract the destination
  * IP address and generate an AMQP address from the vlan name and the IP address.
  */
-static void get_dest_addr(unsigned char *buffer, char *addr, int len)
+static void get_dest_addr(const unsigned char *buffer, const char *vlan, char *addr, int len)
 {
     const ip_header_t *hdr = (const ip_header_t*) buffer;
 
@@ -170,12 +180,13 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
     qd_buffer_t      *buf;
     qd_buffer_list_t  buffers;
     ssize_t           len;
+    tunnel_t         *tunnel = (tunnel_t*) context;
 
     DEQ_INIT(buffers);
 
     if (qd_user_fd_is_writeable(ufd)) {
         sys_mutex_lock(lock);
-        msg = DEQ_HEAD(in_messages);
+        msg = DEQ_HEAD(tunnel->in_messages);
         while (msg) {
             //lq_timestamp_LH("Write to Tunnel");
             qd_field_iterator_t *body_iter    = qd_message_field_iterator(msg, QD_FIELD_BODY);
@@ -185,7 +196,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
             qd_parse_free(content);
             qd_field_iterator_free(body_iter);
             if (iov) {
-                len = writev(fd, qd_iovec_array(iov), qd_iovec_count(iov));
+                len = writev(tunnel->fd, qd_iovec_array(iov), qd_iovec_count(iov));
                 qd_iovec_free(iov);
                 if (len == -1) {
                     if (errno == EAGAIN || errno == EINTR) {
@@ -193,16 +204,16 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
                         // FD socket is not accepting writes (it's full).  Activate for write
                         // so we'll come back here when it's again writable.
                         //
-                        qd_user_fd_activate_write(user_fd);
+                        qd_user_fd_activate_write(ufd);
                         break;
                     }
                 }
             }
 
-            DEQ_REMOVE_HEAD(in_messages);
+            DEQ_REMOVE_HEAD(tunnel->in_messages);
             qd_message_free(msg);
             qd_log(log_source, QD_LOG_TRACE, "Inbound Datagram: len=%ld", len);
-            msg = DEQ_HEAD(in_messages);
+            msg = DEQ_HEAD(tunnel->in_messages);
         }
         sys_mutex_unlock(lock);
     }
@@ -211,11 +222,11 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
         while (1) {
             // TODO - Scatter the read into message buffers
             buf = qd_buffer();
-            len = read(fd, qd_buffer_base(buf), MTU);
+            len = read(tunnel->fd, qd_buffer_base(buf), MTU);
             if (len == -1) {
                 qd_buffer_free(buf);
                 if (errno == EAGAIN || errno == EINTR) {
-                    qd_user_fd_activate_read(user_fd);
+                    qd_user_fd_activate_read(ufd);
                     return;
                 }
 
@@ -231,7 +242,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
 
             qd_buffer_insert(buf, len);
             DEQ_INSERT_HEAD(buffers, buf);
-            get_dest_addr(qd_buffer_base(buf), addr_str, 200);
+            get_dest_addr(qd_buffer_base(buf), tunnel->vlan, addr_str, 200);
 
             //
             // Create an AMQP message with the packet's destination address and
@@ -255,7 +266,7 @@ static void user_fd_handler(void *context, qd_user_fd_t *ufd)
         }
     }
 
-    qd_user_fd_activate_read(user_fd); // FIX THIS!!
+    qd_user_fd_activate_read(ufd); // FIX THIS!!
 }
 
 
@@ -265,6 +276,7 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
     qd_message_t        *msg;
     int                  valid_message = 0;
     qd_field_iterator_t *iter = 0;
+    tunnel_t            *tunnel = (tunnel_t*) qd_link_get_context(link);
 
     //
     // Extract the message from the incoming delivery.
@@ -297,8 +309,8 @@ static void bridge_rx_handler(void *node_context, qd_link_t *link, qd_delivery_t
         // queue and activate the tunnel FD for write.
         //
         if (iter) {
-            DEQ_INSERT_TAIL(in_messages, msg);
-            qd_user_fd_activate_write(user_fd);
+            DEQ_INSERT_TAIL(tunnel->in_messages, msg);
+            qd_user_fd_activate_write(tunnel->ufd);
             qd_field_iterator_free(iter);
             //lq_timestamp_LH("Received encapsulated PDU");
         }
@@ -403,24 +415,31 @@ static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_
     qd_log(log_source, QD_LOG_INFO, "AMQP Connection Established");
 
     sender = qd_link(node, conn, QD_OUTGOING, "vlan-sender");
-
-    if (address4) {
-        receiver4 = qd_link(node, conn, QD_INCOMING, "vlan-receiver4");
-        pn_terminus_set_address(qd_link_source(receiver4), address4);
-        pn_terminus_set_address(qd_link_remote_target(receiver4), address4);
-        pn_link_open(qd_link_pn(receiver4));
-        pn_link_flow(qd_link_pn(receiver4), 40);
-    }
-
-    if (address6) {
-        receiver6 = qd_link(node, conn, QD_INCOMING, "vlan-receiver6");
-        pn_terminus_set_address(qd_link_source(receiver6), address6);
-        pn_terminus_set_address(qd_link_remote_target(receiver6), address6);
-        pn_link_open(qd_link_pn(receiver6));
-        pn_link_flow(qd_link_pn(receiver6), 40);
-    }
-
     pn_link_open(qd_link_pn(sender));
+
+    tunnel_t *tunnel = DEQ_HEAD(tunnels);
+    while (tunnel) {
+        if (tunnel->ip_addr) {
+            char a4[1000];
+            tunnel->ip_link = qd_link(node, conn, QD_INCOMING, "vrx");
+            snprintf(a4, 1000, "u/%s/%s", tunnel->vlan, tunnel->ip_addr);
+            pn_terminus_set_address(qd_link_source(tunnel->ip_link), a4);
+            pn_terminus_set_address(qd_link_remote_target(tunnel->ip_link), a4);
+            pn_link_open(qd_link_pn(tunnel->ip_link));
+            pn_link_flow(qd_link_pn(tunnel->ip_link), 40);
+        }
+        if (tunnel->ip6_addr) {
+            char a6[1000];
+            tunnel->ip6_link = qd_link(node, conn, QD_INCOMING, "vrx");
+            snprintf(a6, 1000, "u/%s/%s", tunnel->vlan, tunnel->ip6_addr);
+            pn_terminus_set_address(qd_link_source(tunnel->ip6_link), a6);
+            pn_terminus_set_address(qd_link_remote_target(tunnel->ip6_link), a6);
+            pn_link_open(qd_link_pn(tunnel->ip6_link));
+            pn_link_flow(qd_link_pn(tunnel->ip6_link), 40);
+        }
+
+        tunnel = DEQ_NEXT(tunnel);
+    }
 }
 
 
@@ -441,67 +460,35 @@ static const qd_node_type_t node_descriptor = {"vlan-controller", 0, 0,
 //static const char *CONF_VLAN_IF   = "if-name";
 
 
-int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
+static const char *bridge_get_env(const char *suffix, int idx)
 {
-    const char *_ip4 = 0;
-    const char *_ip6 = 0;
-    const char *_if  = "lanq0";
+    char var[32];
 
-    const char *env;
+    snprintf(var, 32, "LANQP_IF%d_%s", idx, suffix);
+    return getenv(var);
+}
 
-    if ((env = getenv("LANQP_VLAN")))
-        vlan = env;
 
-    if ((env = getenv("LANQP_IF")))
-        _if = env;
+static tunnel_t *bridge_add_tunnel(qd_dispatch_t *_dx, int idx)
+{
+    tunnel_t *tunnel = NEW(tunnel_t);
+    memset(tunnel, 0, sizeof(tunnel_t));
+    DEQ_ITEM_INIT(tunnel);
+    DEQ_INIT(tunnel->in_messages);
 
-    _ip4 = getenv("LANQP_IP");
-    _ip6 = getenv("LANQP_IP6");
-    if (!_ip4 && !_ip6) {
-        printf("Environment variables LANQP_IP and LANQP_IP6 not set\n");
-        exit(1);
-    }
+    tunnel->name     = bridge_get_env("NAME", idx);
+    tunnel->ns_pid   = bridge_get_env("PID",  idx);
+    tunnel->vlan     = bridge_get_env("VLAN", idx);
+    tunnel->ip_addr  = bridge_get_env("IP",   idx);
+    tunnel->ip6_addr = bridge_get_env("IP6",  idx);
 
-    dx = _dx;
+    if (!tunnel->name)
+        tunnel->name = "lanq0";
 
-    // TODO - Get vlan configuration from the config file
-
-    //    int count = qd_config_item_count(dx, CONF_VLAN);
-    //    if (count > 0) {
-    //        vlan  = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_NAME);
-    //        _ip   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IP);
-    //        _if   = qd_config_item_value_string(dx, CONF_VLAN, 0, CONF_VLAN_IF);
-    //    }
-
-    if (_ip4) {
-        address4 = (char*) malloc(strlen(vlan) + strlen(_ip4) + 3);
-        strcpy(address4, "u/");
-        strcat(address4, vlan);
-        strcat(address4, "/");
-        strcat(address4, _ip4);
-    }
-
-    if (_ip6) {
-        address6 = (char*) malloc(strlen(vlan) + strlen(_ip6) + 3);
-        strcpy(address6, "u/");
-        strcat(address6, vlan);
-        strcat(address6, "/");
-        strcat(address6, _ip6);
-    }
-
-    log_source = qd_log_source(MODULE);
-
-    qd_log(log_source, QD_LOG_INFO, "Creating Endpoint on Interface '%s'", _if);
-    if (address4) qd_log(log_source, QD_LOG_INFO, "IPv4 Address: %s", address4);
-    if (address6) qd_log(log_source, QD_LOG_INFO, "IPv6 Address: %s", address6);
-
-    char *dev = malloc(10);
-    strcpy(dev, _if);
-    fd = open_tunnel_in_ns(dev, ns_pid);
-
+    int fd = open_tunnel_in_ns(tunnel->name, tunnel->ns_pid);
     if (fd == -1) {
-        qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s", dev);
-        return -1;
+        qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s", tunnel->name);
+        exit(1);
     }
 
     int flags = fcntl(fd, F_GETFL);
@@ -510,28 +497,57 @@ int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
     if (fcntl(fd, F_SETFL, flags) < 0) {
         qd_log(log_source, QD_LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
         close(fd);
-        return -1;
+        exit(1);
     }
 
-    lock = sys_mutex();
-
-    qd_log(log_source, QD_LOG_INFO, "Tunnel opened: %s, fd=%d", dev, fd);
-
-    DEQ_INIT(out_messages);
-    DEQ_INIT(in_messages);
-
-    //
-    // Register the FD as a user-fd to be managed by dispatch-server.
-    //
-    qd_server_set_user_fd_handler(dx, user_fd_handler);
-    user_fd = qd_user_fd(dx, fd, 0);
-    if (user_fd == 0) {
+    tunnel->ufd = qd_user_fd(dx, fd, tunnel);
+    if (tunnel->ufd == 0) {
         qd_log(log_source, QD_LOG_ERROR, "Failed to create qd_user_fd");
         close(fd);
-        return -1;
+        exit(1);
     }
-    qd_user_fd_activate_read(user_fd);
-    qd_user_fd_activate_write(user_fd);
+
+    qd_user_fd_activate_read(tunnel->ufd);
+    qd_user_fd_activate_write(tunnel->ufd);
+
+    return tunnel;
+}
+
+
+int bridge_setup(qd_dispatch_t *_dx, const char *ns_pid)
+{
+    const char *env = getenv("LANQP_IF_COUNT");
+
+    dx = _dx;
+    qd_server_set_user_fd_handler(dx, user_fd_handler);
+
+    DEQ_INIT(out_messages);
+    DEQ_INIT(tunnels);
+
+    log_source = qd_log_source(MODULE);
+    lock = sys_mutex();
+
+    if (!env) {
+        printf("Environment variable LANQP_IF_COUNT not set\n");
+        exit(1);
+    }
+
+    int idx;
+    int tunnel_count = atoi(env);
+    qd_log(log_source, QD_LOG_INFO, "Tunnel Count: %d", tunnel_count);
+
+    for (idx = 0; idx < tunnel_count; idx++) {
+        tunnel_t *tunnel = bridge_add_tunnel(dx, idx);
+        DEQ_INSERT_TAIL(tunnels, tunnel);
+        qd_log(log_source, QD_LOG_INFO, "    Tunnel Name:      %s", tunnel->name);
+        if (tunnel->ns_pid)
+            qd_log(log_source, QD_LOG_INFO, "    Tunnel PID:       %s", tunnel->ns_pid);
+        qd_log(log_source, QD_LOG_INFO, "    Tunnel VLAN:      %s", tunnel->vlan);
+        if (tunnel->ip_addr)
+            qd_log(log_source, QD_LOG_INFO, "    Tunnel IP Addr:   %s", tunnel->ip_addr);
+        if (tunnel->ip6_addr)
+            qd_log(log_source, QD_LOG_INFO, "    Tunnel IPv6 Addr: %s", tunnel->ip6_addr);
+    }
 
     //
     // Setup periodic timer
