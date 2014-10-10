@@ -485,25 +485,25 @@ static tunnel_t *bridge_add_tunnel(qd_dispatch_t *_dx, int idx)
     if (!tunnel->name)
         tunnel->name = "lanq0";
 
-    int fd = open_tunnel_in_ns(tunnel->name, tunnel->ns_pid);
-    if (fd == -1) {
+    tunnel->fd = open_tunnel_in_ns(tunnel->name, tunnel->ns_pid);
+    if (tunnel->fd == -1) {
         qd_log(log_source, QD_LOG_ERROR, "Tunnel open failed on device %s", tunnel->name);
         exit(1);
     }
 
-    int flags = fcntl(fd, F_GETFL);
+    int flags = fcntl(tunnel->fd, F_GETFL);
     flags |= O_NONBLOCK;
 
-    if (fcntl(fd, F_SETFL, flags) < 0) {
+    if (fcntl(tunnel->fd, F_SETFL, flags) < 0) {
         qd_log(log_source, QD_LOG_ERROR, "Tunnel failed to set non-blocking: %s", strerror(errno));
-        close(fd);
+        close(tunnel->fd);
         exit(1);
     }
 
-    tunnel->ufd = qd_user_fd(dx, fd, tunnel);
+    tunnel->ufd = qd_user_fd(dx, tunnel->fd, tunnel);
     if (tunnel->ufd == 0) {
         qd_log(log_source, QD_LOG_ERROR, "Failed to create qd_user_fd");
-        close(fd);
+        close(tunnel->fd);
         exit(1);
     }
 
