@@ -422,6 +422,7 @@ static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_
         if (tunnel->ip_addr) {
             char a4[1000];
             tunnel->ip_link = qd_link(node, conn, QD_INCOMING, "vrx");
+            qd_link_set_context(tunnel->ip_link, tunnel);
             snprintf(a4, 1000, "u/%s/%s", tunnel->vlan, tunnel->ip_addr);
             pn_terminus_set_address(qd_link_source(tunnel->ip_link), a4);
             pn_terminus_set_address(qd_link_remote_target(tunnel->ip_link), a4);
@@ -431,6 +432,7 @@ static void bridge_outbound_conn_open_handler(void *type_context, qd_connection_
         if (tunnel->ip6_addr) {
             char a6[1000];
             tunnel->ip6_link = qd_link(node, conn, QD_INCOMING, "vrx");
+            qd_link_set_context(tunnel->ip6_link, tunnel);
             snprintf(a6, 1000, "u/%s/%s", tunnel->vlan, tunnel->ip6_addr);
             pn_terminus_set_address(qd_link_source(tunnel->ip6_link), a6);
             pn_terminus_set_address(qd_link_remote_target(tunnel->ip6_link), a6);
